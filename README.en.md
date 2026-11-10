@@ -35,7 +35,7 @@ cp config/env.example config/.env && cp config/ai.env.example config/ai.env   # 
 cd docker && bash generate_certs.sh patch-manager.example.com && docker compose up -d
 ```
 
-Then configure Semaphore (repository `/opt/patch-manager`, File inventory `inventory/hosts.yml`, templates "Check Updates" and "Apply Patches", API token): [WIKI section 5](https://github.com/louzaonet/patch-manager/wiki/Home-EN#5-configuring-semaphore-ui).
+Then configure Semaphore (repository `/opt/patch-manager`, File inventory `inventory/hosts.yml`, templates "Check Updates" and "Apply Patches", API token): [WIKI section 5](https://github.com/louzaonet/patch_manager/wiki/Home-EN#5-configuring-semaphore-ui).
 
 | URL | |
 |-----|--|
@@ -61,7 +61,7 @@ OPENROUTER_API_KEY=sk-or-...
 # or a local server: LLM_DEFAULT=openai_compat:gpt-oss-20b + OPENAI_COMPAT_BASE_URL=http://llm-host:8080/v1
 ```
 
-If the model is unreachable the dashboard still works with keyword intent matching and a template briefing. Details in [WIKI section 14](https://github.com/louzaonet/patch-manager/wiki/Home-EN#14-llm-configuration-and-model-routing).
+If the model is unreachable the dashboard still works with keyword intent matching and a template briefing. Details in [WIKI section 14](https://github.com/louzaonet/patch_manager/wiki/Home-EN#14-llm-configuration-and-model-routing).
 
 ## Layout
 
@@ -81,5 +81,5 @@ tests/                               pytest suite (fake LLM, mocked Semaphore/NV
 
 ## Docs
 
-- [Wiki](https://github.com/louzaonet/patch-manager/wiki/Home-EN): installation, host setup, Semaphore, LLM routing, risk model, API, security, troubleshooting
+- [Wiki](https://github.com/louzaonet/patch_manager/wiki/Home-EN): installation, host setup, Semaphore, LLM routing, risk model, API, security, troubleshooting
 - [CHANGELOG.en.md](CHANGELOG.en.md): release notes
