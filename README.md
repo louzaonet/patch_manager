@@ -35,7 +35,7 @@ cp config/env.example config/.env && cp config/ai.env.example config/ai.env   # 
 cd docker && bash generate_certs.sh patch-manager.example.com && docker compose up -d
 ```
 
-Después configura Semaphore (repositorio `/opt/patch-manager`, inventario de tipo File `inventory/hosts.yml`, plantillas "Check Updates" y "Apply Patches", token de API): [sección 5 de la WIKI](WIKI.md#5-configuración-de-semaphore-ui).
+Después configura Semaphore (repositorio `/opt/patch-manager`, inventario de tipo File `inventory/hosts.yml`, plantillas "Check Updates" y "Apply Patches", token de API): [sección 5 de la WIKI](https://github.com/louzaonet/patch-manager/wiki/Home#5-configuración-de-semaphore-ui).
 
 | URL | |
 |-----|--|
@@ -61,7 +61,7 @@ OPENROUTER_API_KEY=sk-or-...
 # o un servidor local: LLM_DEFAULT=openai_compat:gpt-oss-20b + OPENAI_COMPAT_BASE_URL=http://llm-host:8080/v1
 ```
 
-Si el modelo no responde, el panel sigue funcionando con detección de intención por palabras clave y un resumen generado con plantilla. Detalles en la [sección 14 de la WIKI](WIKI.md#14-configuración-del-llm-y-enrutado-de-modelos).
+Si el modelo no responde, el panel sigue funcionando con detección de intención por palabras clave y un resumen generado con plantilla. Detalles en la [sección 14 de la WIKI](https://github.com/louzaonet/patch-manager/wiki/Home#14-configuración-del-llm-y-enrutado-de-modelos).
 
 ## Estructura
 
@@ -81,5 +81,5 @@ tests/                               tests de pytest (LLM simulado, Semaphore/NV
 
 ## Documentación
 
-- [WIKI.md](WIKI.md): instalación, preparación de hosts, Semaphore, enrutado de LLM, modelo de riesgo, API, seguridad y resolución de problemas
+- [Wiki](https://github.com/louzaonet/patch-manager/wiki): instalación, preparación de hosts, Semaphore, enrutado de LLM, modelo de riesgo, API, seguridad y resolución de problemas
 - [CHANGELOG.md](CHANGELOG.md): notas de la versión
