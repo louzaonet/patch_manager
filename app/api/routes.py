@@ -6,6 +6,7 @@ Semaphore task status, Slack and Teams webhooks, health.
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 from typing import Any
 from urllib.parse import parse_qs
@@ -390,6 +391,28 @@ async def slack_webhook(request: Request) -> JSONResponse:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+# Teams sends the message as HTML. Both patterns are linear: every match
+# attempt stops at the next '<', so input such as "<<<<..." or
+# "<at><at><at>..." can't trigger quadratic backtracking (CodeQL
+# py/polynomial-redos). The display name inside <at>...</at> arrives
+# HTML-escaped (&lt;), so [^<]* is enough for mentions.
+_TEAMS_MENTION_RE = re.compile(r"<at>[^<]*</at>")
+_HTML_TAG_RE = re.compile(r"<[^<>]+>")
+# Cap on the raw HTML before any processing. Real Teams messages are
+# smaller; this only bounds the work if someone sends something huge.
+_TEAMS_RAW_MAX = 20_000
+
+
+def _teams_text(raw: Any) -> str:
+    """Plain text of a Teams message, without mentions, tags or entities."""
+    text = _TEAMS_MENTION_RE.sub("", str(raw)[:_TEAMS_RAW_MAX])
+    text = _HTML_TAG_RE.sub(" ", text)
+    # Entities go last, so an escaped "&lt;b&gt;" stays as text. &nbsp;
+    # becomes a normal space or hostnames and "approve <id>" would not match.
+    text = html.unescape(text).replace("\xa0", " ")
+    return " ".join(text.split())[:4000]
+
+
 async def _teams_run_and_post(teams: TeamsBot, text: str, sender: str) -> None:
     try:
         state = await _run(text, requested_by=f"teams:{sender}", source="teams")
@@ -413,8 +436,7 @@ async def teams_webhook(request: Request) -> JSONResponse:
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
 
-    text = re.sub(r"<at>.*?</at>", "", str(data.get("text", "")), flags=re.S)
-    text = re.sub(r"<[^>]+>", " ", text).strip()[:4000]
+    text = _teams_text(data.get("text", ""))
     sender_info = data.get("from")
     sender = str(sender_info.get("name", "unknown") if isinstance(sender_info, dict) else "unknown")[:100]
     if not text:

@@ -1,5 +1,17 @@
 # Registro de cambios
 
+## 1.0.1 (2026-11-10)
+
+### Seguridad
+
+- Webhook de Teams: las expresiones regulares que quitan menciones y etiquetas HTML tardaban un tiempo cuadrático con entradas como `<<<<...` o `<at><at>...` (unos 5 s con 80.000 caracteres) y bloqueaban el servicio mientras tanto. Ahora son lineales y el HTML se recorta a 20.000 caracteres antes de procesarlo. Hacía falta un HMAC válido de Teams para explotarlo. Cierra las alertas de CodeQL `py/polynomial-redos` #1 y #2.
+- Docker: nginx pasaba al servicio de IA la cabecera `X-Forwarded-For` que mandaba el cliente y uvicorn, con `--forwarded-allow-ips "*"`, usaba la primera dirección de esa cabecera. Cambiando la cabecera en cada intento se evitaba el límite de intentos de login fallidos. Ahora nginx manda solo la dirección real del cliente. La instalación nativa no estaba afectada.
+
+### Correcciones
+
+- `install.sh`: en la primera instalación el `umask 077` usado para guardar la contraseña de Semaphore se aplicaba al resto del script, el venv del servicio de IA quedaba como 0700 de root y el usuario `patchai` no podía arrancarlo. Una segunda ejecución lo arreglaba. El `umask` va ahora en un subshell.
+- Teams: el texto del mensaje llegaba al agente con entidades HTML sin decodificar (`&nbsp;`, `&amp;`), lo que podía impedir reconocer nombres de host y el aviso de que los planes no se aprueban desde Teams. Ahora se decodifican y los espacios se normalizan.
+
 ## 1.0.0 (2026-11-09)
 
 Primera versión pública.

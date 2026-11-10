@@ -124,7 +124,9 @@ if [[ ! -f "$SEM_ADMIN_PASS_FILE" ]]; then
   SEM_PASS="$(head -c18 /dev/urandom | base64 | tr -d '/+=')"
   if runuser -u semaphore -- semaphore user add --config /etc/semaphore/config.json --admin \
        --login admin --name "Administrator" --email admin@localhost --password "$SEM_PASS"; then
-    umask 077; echo "$SEM_PASS" > "$SEM_ADMIN_PASS_FILE"
+    # umask in a subshell: in the main shell it would leave the venv created
+    # below as 0700 root, and the patchai user could not run it.
+    (umask 077; echo "$SEM_PASS" > "$SEM_ADMIN_PASS_FILE")
     echo "Semaphore admin password saved in $SEM_ADMIN_PASS_FILE"
   else
     echo "WARNING: could not create the Semaphore admin user (exists already?)" >&2

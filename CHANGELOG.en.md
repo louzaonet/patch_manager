@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.1 (2026-11-10)
+
+### Security
+
+- Teams webhook: the regular expressions that strip mentions and HTML tags took quadratic time on input such as `<<<<...` or `<at><at>...` (about 5 s for 80,000 characters) and blocked the service meanwhile. They are now linear, and the raw HTML is capped at 20,000 characters before processing. Exploiting it required a valid Teams HMAC. Closes CodeQL alerts `py/polynomial-redos` #1 and #2.
+- Docker: nginx forwarded the client's own `X-Forwarded-For` header to the AI service, and uvicorn, started with `--forwarded-allow-ips "*"`, used the first address in it. Changing the header on every attempt got around the failed-login throttle. nginx now sends only the real client address. The native install was not affected.
+
+### Fixes
+
+- `install.sh`: on a first install, the `umask 077` used to save the Semaphore password applied to the rest of the script, the AI service venv ended up 0700 root and the `patchai` user could not start it. Running the script again fixed it. The `umask` now runs in a subshell.
+- Teams: message text reached the agent with HTML entities still encoded (`&nbsp;`, `&amp;`), which could stop host names and the "plans can't be approved from Teams" check from matching. Entities are now decoded and whitespace is normalised.
+
 ## 1.0.0 (2026-11-09)
 
 First public release.

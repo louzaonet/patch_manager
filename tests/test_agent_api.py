@@ -291,6 +291,28 @@ async def test_teams_hmac(client, env, monkeypatch):
     assert r.status_code == 401
 
 
+def test_teams_text_strips_mentions_and_tags():
+    from app.api.routes import _teams_text
+
+    assert _teams_text("<at>PatchBot</at> analyze risk") == "analyze risk"
+    assert _teams_text("<p><at>Patch Bot</at>&nbsp;check <b>web01</b></p>") == "check web01"
+    assert _teams_text("approve&nbsp;0123456789ab") == "approve 0123456789ab"
+    assert _teams_text("show &lt;b&gt; &amp; more") == "show <b> & more"
+    assert _teams_text("a <> b") == "a <> b"
+
+
+@pytest.mark.parametrize("payload", ["<" * 200_000, "<at>" * 50_000, "<at>x" * 40_000])
+def test_teams_patterns_are_linear(payload):
+    # The patterns are checked directly, without the input cap in
+    # _teams_text, so a quadratic regex would show up here. The old ones
+    # took several seconds on 80k characters (CodeQL py/polynomial-redos).
+    from app.api.routes import _HTML_TAG_RE, _TEAMS_MENTION_RE
+
+    start = time.perf_counter()
+    _HTML_TAG_RE.sub(" ", _TEAMS_MENTION_RE.sub("", payload))
+    assert time.perf_counter() - start < 0.5
+
+
 # ─── CVE enrichment with mocked KEV / NVD ───────────────────────────────
 
 

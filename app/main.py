@@ -21,7 +21,7 @@ from app.config import get_settings
 from app.security import Principal, require_user
 from app.tools.llm_router import get_active_models
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 
 def _configure_logging(level_name: str) -> None:
