@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patch Manager AI</title>
+    <!-- Relative URLs so the app works at / and behind a prefix such as /ai/ -->
+    <link rel="stylesheet" href="static/css/style.css">
+</head>
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>🛡️ Patch AI</h1>
+                <span class="version">v{{ version }}</span>
+            </div>
+
+            <nav class="sidebar-nav">
+                <h3>Quick actions</h3>
+                <button class="action-btn" data-action="check-updates" type="button">
+                    <span class="icon">🔍</span> Pending updates
+                </button>
+                <button class="action-btn" data-action="analyze-risk" type="button">
+                    <span class="icon">⚡</span> Analyze risk
+                </button>
+                <button class="action-btn action-btn--warning" data-action="plan-patches" type="button">
+                    <span class="icon">📋</span> Plan patches
+                </button>
+                <button class="action-btn action-btn--subtle" id="runCheckBtn" type="button"
+                        title="Runs the Check Updates template in Semaphore (read-only on hosts)">
+                    <span class="icon">🔄</span> Refresh host data
+                </button>
+
+                <h3>Target</h3>
+                <select id="targetGroup" class="select-input">
+                    <option value="">All hosts</option>
+                </select>
+
+                <h3>Options</h3>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="optSecurityOnly"> Security patches only
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="optDryRun"> Dry run (simulate)
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="optNoReboot"> Prevent reboots
+                </label>
+                <p class="hint">Patching always needs an explicit approval of the plan.</p>
+            </nav>
+
+            <div class="sidebar-footer">
+                <span class="user">Signed in as {{ user }}</span>
+            </div>
+        </aside>
+
+        <main class="main">
+            <div class="chat-container" id="chatContainer">
+                <div class="chat-welcome">
+                    <h2>Patch Manager AI</h2>
+                    <p>Ask about pending updates, risk, or plan a patch run. Examples:</p>
+                    <div class="example-queries">
+                        <button class="example-btn" type="button">Which hosts have known exploited CVEs pending?</button>
+                        <button class="example-btn" type="button">Analyze security risk for windows_servers</button>
+                        <button class="example-btn" type="button">Plan security-only patches on ubuntu_servers</button>
+                        <button class="example-btn" type="button">Summarise this week's patch status</button>
+                        <button class="example-btn" type="button">What's the status of the last patch run?</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="risk-dashboard hidden" id="riskDashboard">
+                <h3>Risk overview</h3>
+                <div class="risk-cards" id="riskCards"></div>
+            </div>
+
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <textarea id="chatInput" rows="1" maxlength="4000"
+                              placeholder="Ask about patches, risk, or request a plan..."></textarea>
+                    <button class="send-btn" id="sendBtn" type="button" aria-label="Send">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="static/js/app.js"></script>
+</body>
+</html>

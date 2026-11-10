@@ -1,0 +1,44 @@
+---
+# =============================================================================
+# Global variables (all hosts)
+# =============================================================================
+
+# ─── Email notifications ────────────────────────────────────────────────────
+# Read from the controller environment. In Docker, Semaphore forwards these
+# variables to tasks through SEMAPHORE_FORWARDED_ENV_VARS (docker-compose.yml).
+email_enabled: "{{ lookup('ansible.builtin.env', 'EMAIL_ENABLED', default='false') | bool }}"
+smtp_host: "{{ lookup('ansible.builtin.env', 'SMTP_HOST', default='localhost') }}"
+smtp_port: "{{ lookup('ansible.builtin.env', 'SMTP_PORT', default='587') | int }}"
+smtp_user: "{{ lookup('ansible.builtin.env', 'SMTP_USER', default='') }}"
+smtp_password: "{{ lookup('ansible.builtin.env', 'SMTP_PASSWORD', default='') }}"
+# starttls | always | never | try
+smtp_secure: "{{ lookup('ansible.builtin.env', 'SMTP_SECURE', default='starttls') }}"
+
+email_from: "Patch Manager <patches@example.com>"
+email_to:
+  - "sysadmin@example.com"
+email_subject_prefix: "[PATCH-MGR]"
+
+# ─── Patching policy ────────────────────────────────────────────────────────
+patch_reboot_allowed: true
+patch_reboot_timeout: 900          # seconds to wait for a host to come back
+patch_dry_run: false               # true = detect only, install nothing
+# Security-only mode. Also enabled by running with --tags security_only.
+patch_security_only: "{{ 'security_only' in ansible_run_tags }}"
+# Batch size per OS play is set with an extra var, because play keywords
+# can't see group_vars:  -e patch_serial=25%   (default 100%)
+
+# ─── Per-host JSON reports (read by the AI service) ─────────────────────────
+# Written on the controller (the Semaphore host/container), one file per host.
+patch_report_dir: "{{ lookup('ansible.builtin.env', 'PATCH_REPORT_DIR', default='/var/lib/patch-manager/reports') }}"
+patch_report_enabled: true
+
+# ─── Maintenance window (optional) ──────────────────────────────────────────
+# Evaluated with the CONTROLLER's local clock. Windows that cross midnight
+# (e.g. 22:00-04:00) are supported. Days: 0=Monday ... 6=Sunday.
+maintenance_window_enabled: false
+maintenance_window_start: "02:00"
+maintenance_window_end: "06:00"
+maintenance_window_days:
+  - 5  # Saturday
+  - 6  # Sunday

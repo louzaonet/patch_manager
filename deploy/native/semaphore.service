@@ -1,0 +1,26 @@
+[Unit]
+Description=Semaphore UI (Ansible)
+Documentation=https://semaphoreui.com/docs
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=semaphore
+Group=semaphore
+SupplementaryGroups=patchreports
+WorkingDirectory=/var/lib/semaphore
+EnvironmentFile=/etc/semaphore/semaphore.env
+# Use the Ansible from the dedicated venv
+Environment=PATH=/opt/ansible-venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/semaphore
+ExecStart=/usr/bin/semaphore server --config /etc/semaphore/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

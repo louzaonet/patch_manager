@@ -1,0 +1,18 @@
+---
+# =============================================================================
+# Ubuntu servers
+# =============================================================================
+
+# Packages put on hold (dpkg) so upgrades never touch them.
+# Holds stay in place until you remove them: apt-mark unhold <pkg>
+patch_excluded_packages: []
+#  - linux-firmware
+#  - docker-ce
+#  - kubelet
+
+# Remove orphaned packages and clean the apt cache after upgrading
+patch_autoremove: true
+patch_autoclean: true
+
+# Uncomment to force security-only mode for this group
+# patch_security_only: true

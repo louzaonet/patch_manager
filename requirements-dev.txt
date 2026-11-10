@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest>=9
+pytest-asyncio>=1
+respx>=0.22
+ruff>=0.14
+ansible-core>=2.20
+ansible-lint>=26

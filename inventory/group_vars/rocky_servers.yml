@@ -1,0 +1,15 @@
+---
+# =============================================================================
+# Rocky Linux servers
+# =============================================================================
+
+# Package globs excluded from updates
+patch_excluded_packages: []
+#  - kernel*
+#  - docker-ce
+
+# Uncomment to force security-only mode (uses updateinfo advisories)
+# patch_security_only: true
+
+# Clean the dnf cache after updating
+patch_autoclean: true

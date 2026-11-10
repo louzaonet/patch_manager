@@ -1,0 +1,4 @@
+# Extra Python packages installed into the Semaphore container at start-up
+# (mounted at /etc/semaphore/requirements.txt). WinRM support for Windows hosts:
+pywinrm>=0.5
+# pywinrm[kerberos]>=0.5   # if you use Kerberos in a domain

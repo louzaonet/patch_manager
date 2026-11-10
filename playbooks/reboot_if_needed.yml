@@ -1,0 +1,55 @@
+---
+# =============================================================================
+# reboot_if_needed.yml: reboot only the hosts that report a pending reboot
+# =============================================================================
+#   ansible-playbook playbooks/reboot_if_needed.yml --limit ubuntu_servers
+# =============================================================================
+
+- name: "Conditional reboot: Ubuntu"
+  hosts: ubuntu_servers
+  become: true
+  gather_facts: false
+  serial: "{{ patch_serial | default('100%') }}"
+  tasks:
+    - name: Check if a reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_flag
+
+    - name: Reboot
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ patch_reboot_timeout }}"
+        msg: "Reboot by Patch Manager"
+      when: reboot_flag.stat.exists
+
+- name: "Conditional reboot: Rocky Linux"
+  hosts: rocky_servers
+  become: true
+  gather_facts: false
+  serial: "{{ patch_serial | default('100%') }}"
+  tasks:
+    - name: Check if a reboot is required
+      ansible.builtin.command: dnf needs-restarting -r
+      register: needs_restarting
+      changed_when: false
+      failed_when: false
+
+    - name: Reboot
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ patch_reboot_timeout }}"
+        msg: "Reboot by Patch Manager"
+      when: needs_restarting.rc == 1
+
+- name: "Conditional reboot: Windows"
+  hosts: windows_servers
+  gather_facts: true  # provides ansible_facts['reboot_pending']
+  serial: "{{ patch_serial | default('100%') }}"
+  tasks:
+    - name: Reboot
+      ansible.windows.win_reboot:
+        reboot_timeout: "{{ patch_windows_reboot_timeout | default(1200) }}"
+        msg: "Reboot by Patch Manager"
+      when: ansible_facts['reboot_pending'] | default(false) | bool
+
+# macOS does not expose a reliable "reboot pending" flag; the apply playbook
+# restarts Macs with softwareupdate --restart when an update needs it.

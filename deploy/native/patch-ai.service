@@ -1,0 +1,36 @@
+[Unit]
+Description=Patch Manager AI (FastAPI / LangGraph)
+Wants=network-online.target
+After=network-online.target semaphore.service
+
+[Service]
+Type=simple
+User=patchai
+Group=patchai
+SupplementaryGroups=patchreports
+WorkingDirectory=/opt/patch-manager
+# The app reads this dotenv file itself (systemd's EnvironmentFile would
+# mangle the JSON values).
+Environment=PATCH_AI_ENV_FILE=/etc/patch-manager/ai.env
+ExecStart=/opt/patch-manager/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8501 --proxy-headers
+Restart=on-failure
+RestartSec=5
+
+# Hardening. If the unit fails with status=226/NAMESPACE inside an
+# unprivileged container, comment out the Protect*/Private* lines.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+ReadOnlyPaths=/opt/patch-manager /etc/patch-manager /var/lib/patch-manager
+
+[Install]
+WantedBy=multi-user.target

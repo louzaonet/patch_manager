@@ -1,0 +1,16 @@
+---
+# =============================================================================
+# macOS hosts
+# =============================================================================
+
+# Let the playbook restart a Mac when an update requires it
+patch_macos_allow_restart: true
+
+# Apple silicon: installing macOS updates with softwareupdate needs the
+# credentials of a volume owner (an admin user with a secure token). Without
+# them, OS updates are listed but not installed. Store the password in Vault:
+#   ansible-vault encrypt_string 'secret' --name vault_macos_update_password
+# MDM (e.g. a declarative software update policy) is the cleaner option for
+# fleets; this is for small setups.
+patch_macos_update_user: ""
+patch_macos_update_password: "{{ vault_macos_update_password | default('') }}"

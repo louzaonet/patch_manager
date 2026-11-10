@@ -1,0 +1,139 @@
+# =============================================================================
+# Docker Compose: Patch Manager full stack behind HTTPS
+# =============================================================================
+# Services: nginx (TLS) -> semaphore (Ansible UI) + patch-ai (FastAPI/LangGraph)
+#           postgres (Semaphore DB), volume-init (one-shot permissions fix)
+#
+# Setup (from the docker/ directory):
+#   1. cp ../config/env.example ../config/.env        && edit (secrets!)
+#      cp ../config/ai.env.example ../config/ai.env   && edit
+#   2. bash generate_certs.sh <hostname>
+#   3. docker compose up -d
+#
+#   https://<host>/      Semaphore UI
+#   https://<host>/ai/   AI dashboard (HTTP Basic auth, APP_AUTH_* in ai.env)
+#
+# The LLM runs elsewhere (llama-swap on another box, or OpenRouter), so there
+# is no Ollama service here. See WIKI section 14.
+# =============================================================================
+
+services:
+
+  nginx:
+    image: nginx:1.30-alpine
+    container_name: patch-manager-proxy
+    restart: unless-stopped
+    depends_on:
+      - semaphore
+      - patch-ai
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks: [patch-net]
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: patch-manager-db
+    restart: unless-stopped
+    # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB come from config/.env
+    env_file:
+      - ../config/.env
+    volumes:
+      # PostgreSQL 18 images keep data under /var/lib/postgresql/18/docker:
+      # mount the parent directory, not .../data.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [patch-net]
+
+  # Named volumes are created root-owned; Semaphore runs as uid 1001 and has
+  # to write the per-host reports and its known_hosts file.
+  volume-init:
+    image: alpine:3.22
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /reports/hosts /reports/patch-runs &&
+        chown -R 1001:0 /reports /ssh &&
+        chmod -R g+rwX,o+rX /reports && chmod 700 /ssh
+    volumes:
+      - reports:/reports
+      - semaphore_ssh:/ssh
+    restart: "no"
+
+  semaphore:
+    image: semaphoreui/semaphore:v2.19.12
+    container_name: patch-manager-ui
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      volume-init:
+        condition: service_completed_successfully
+    expose: ["3000"]
+    env_file:
+      - ../config/.env
+    environment:
+      # SEMAPHORE_DB_USER / SEMAPHORE_DB_PASS / SEMAPHORE_DB come from config/.env
+      SEMAPHORE_DB_DIALECT: postgres
+      SEMAPHORE_DB_HOST: postgres
+      SEMAPHORE_DB_PORT: "5432"
+      SEMAPHORE_PLAYBOOK_PATH: /tmp/semaphore/
+      # Variables passed through to Ansible tasks (used by inventory/group_vars/all.yml)
+      SEMAPHORE_FORWARDED_ENV_VARS: '["EMAIL_ENABLED","SMTP_HOST","SMTP_PORT","SMTP_USER","SMTP_PASSWORD","SMTP_SECURE","PATCH_REPORT_DIR"]'
+      PATCH_REPORT_DIR: /var/lib/patch-manager/reports
+    volumes:
+      # Repository content Ansible needs, read-only (config/ secrets stay out).
+      # In Semaphore: repository URL /opt/patch-manager, File inventory
+      # "inventory/hosts.yml" (so inventory/group_vars is picked up).
+      - ../ansible.cfg:/opt/patch-manager/ansible.cfg:ro
+      - ../playbooks:/opt/patch-manager/playbooks:ro
+      - ../inventory:/opt/patch-manager/inventory:ro
+      - ../collections:/opt/patch-manager/collections:ro
+      - ../requirements.yml:/opt/patch-manager/requirements.yml:ro
+      - ./semaphore/requirements.txt:/etc/semaphore/requirements.txt:ro
+      - reports:/var/lib/patch-manager/reports
+      - semaphore_ssh:/home/semaphore/.ssh
+    networks: [patch-net]
+
+  patch-ai:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: patch-manager-ai
+    restart: unless-stopped
+    depends_on:
+      - semaphore
+    expose: ["8501"]
+    env_file:
+      - ../config/ai.env
+    environment:
+      SEMAPHORE_URL: http://semaphore:3000
+      INVENTORY_PATH: /opt/patch-manager/inventory/hosts.yml
+      REPORTS_PATH: /var/lib/patch-manager/reports
+    volumes:
+      # Only what the service needs; no secrets from config/ are mounted.
+      - ../inventory:/opt/patch-manager/inventory:ro
+      - reports:/var/lib/patch-manager/reports:ro
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    networks: [patch-net]
+
+volumes:
+  pgdata:
+  reports:
+  semaphore_ssh:    # known_hosts for the semaphore user
+
+networks:
+  patch-net:
+    driver: bridge

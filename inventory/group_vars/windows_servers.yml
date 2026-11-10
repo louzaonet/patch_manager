@@ -1,0 +1,27 @@
+---
+# =============================================================================
+# Windows 10 / 11 hosts
+# =============================================================================
+
+# Categories installed in normal mode
+# Options: Application, Connectors, CriticalUpdates, DefinitionUpdates,
+#          DeveloperKits, FeaturePacks, Guidance, SecurityUpdates, ServicePacks,
+#          Tools, UpdateRollups, Updates
+patch_windows_categories:
+  - CriticalUpdates
+  - SecurityUpdates
+  - UpdateRollups
+  - DefinitionUpdates
+
+# Categories installed in security-only mode
+patch_windows_security_categories:
+  - CriticalUpdates
+  - SecurityUpdates
+
+# KBs or title regexes that are never installed (known bad updates)
+patch_windows_reject_list: []
+#  - KB5001234
+
+# Let win_updates reboot (also requires patch_reboot_allowed: true)
+patch_windows_auto_reboot: true
+patch_windows_reboot_timeout: 1200

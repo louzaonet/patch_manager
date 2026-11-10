@@ -1,0 +1,476 @@
+---
+# =============================================================================
+# apply_patches.yml: install updates, reboot where needed, report
+# =============================================================================
+#   ansible-playbook playbooks/apply_patches.yml
+#   ansible-playbook playbooks/apply_patches.yml --limit ubuntu_servers
+#   ansible-playbook playbooks/apply_patches.yml --tags security_only
+#
+# Extra vars (the AI service passes these from an approved plan):
+#   -e patch_dry_run=true          detect only, install nothing
+#   -e patch_reboot_allowed=false  never reboot
+#   -e patch_security_only=true    security updates only (same as --tags security_only)
+# =============================================================================
+
+# ─── Maintenance window ─────────────────────────────────────────────────────
+# No connection needed: assert runs on the controller. A host that fails here
+# is excluded from every later play in this run.
+- name: "Verify maintenance window"
+  hosts: all
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Check the controller clock against the maintenance window
+      ansible.builtin.assert:
+        that: in_window | bool
+        fail_msg: >-
+          Outside the maintenance window ({{ maintenance_window_start }}-{{ maintenance_window_end }},
+          days {{ maintenance_window_days }}, 0=Monday). Override with -e maintenance_window_enabled=false
+        quiet: true
+      vars:
+        # Windows that cross midnight (22:00-04:00) count the early hours as
+        # part of the day the window started.
+        in_window: >-
+          {%- set n = now() -%}
+          {%- set m = n.hour * 60 + n.minute -%}
+          {%- set s = (maintenance_window_start.split(':')[0] | int) * 60 + (maintenance_window_start.split(':')[1] | int) -%}
+          {%- set e = (maintenance_window_end.split(':')[0] | int) * 60 + (maintenance_window_end.split(':')[1] | int) -%}
+          {%- set crosses = s > e -%}
+          {%- set day = ((n.weekday() - 1) % 7) if (crosses and m < e) else n.weekday() -%}
+          {%- set in_time = (m >= s or m < e) if crosses else (m >= s and m < e) -%}
+          {{ in_time and (day in (maintenance_window_days | map('int') | list)) }}
+      when: maintenance_window_enabled | bool
+
+# ─── Ubuntu ─────────────────────────────────────────────────────────────────
+- name: "Apply patches: Ubuntu"
+  hosts: ubuntu_servers
+  become: true
+  gather_facts: true
+  serial: "{{ patch_serial | default('100%') }}"
+  tasks:
+    # A failure is recorded (rescue) so the host shows up as FAILED in the
+    # report and the email; the last play then fails the host for real.
+    - name: Patch the host and record the result
+      block:
+        - name: Refresh APT cache
+          ansible.builtin.apt:
+            update_cache: true
+          tags: [always]
+
+        - name: Hold excluded packages
+          ansible.builtin.dpkg_selections:
+            name: "{{ item }}"
+            selection: hold
+          loop: "{{ patch_excluded_packages | default([]) }}"
+          when: not (patch_dry_run | bool)
+          tags: [always]
+
+        - name: List upgradable packages before patching
+          ansible.builtin.command: apt list --upgradable
+          environment:
+            LC_ALL: C
+          register: pre_patch_list
+          changed_when: false
+          tags: [always]
+
+        - name: Select the packages to upgrade
+          ansible.builtin.set_fact:
+            upgradable_lines: "{{ pre_patch_list.stdout_lines | select('search', '\\[upgradable from') | list }}"
+            security_pkgs: >-
+              {{ pre_patch_list.stdout_lines | select('search', '\[upgradable from')
+                 | select('search', '^[^ ]+/[^ ]*-security') | map('regex_replace', '/.*$', '') | list }}
+          tags: [always]
+
+        - name: Install all updates
+          ansible.builtin.apt:
+            upgrade: dist
+            autoremove: "{{ patch_autoremove | default(true) | bool }}"
+            autoclean: "{{ patch_autoclean | default(true) | bool }}"
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          when:
+            - not (patch_dry_run | bool)
+            - not (patch_security_only | bool)
+          tags: [full_update, security_only]
+
+        # Only packages coming from the -security pocket. If there are none,
+        # nothing runs (an empty list must never turn into a full upgrade).
+        - name: Install security updates only
+          ansible.builtin.apt:
+            name: "{{ security_pkgs }}"
+            state: latest
+            only_upgrade: true
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          when:
+            - not (patch_dry_run | bool)
+            - patch_security_only | bool
+            - security_pkgs | length > 0
+          tags: [full_update, security_only]
+
+        - name: Check if a reboot is required
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: reboot_flag
+          tags: [always]
+
+        - name: Reboot
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ patch_reboot_timeout }}"
+            msg: "Reboot by Patch Manager after updates"
+          register: reboot_result
+          when:
+            - reboot_flag.stat.exists
+            - patch_reboot_allowed | bool
+            - not (patch_dry_run | bool)
+          tags: [always]
+
+        - name: Record the result
+          ansible.builtin.set_fact:
+            patch_result:
+              host: "{{ inventory_hostname }}"
+              os: "Ubuntu {{ ansible_facts['distribution_version'] }}"
+              updates_before: "{{ (security_pkgs if (patch_security_only | bool) else upgradable_lines) | list }}"
+              updates_count: "{{ (security_pkgs if (patch_security_only | bool) else upgradable_lines) | length }}"
+              mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
+              status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
+              reboot_needed: "{{ reboot_flag.stat.exists and not (reboot_result is changed) }}"
+              timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          tags: [always]
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            patch_result:
+              host: "{{ inventory_hostname }}"
+              os: "{{ ansible_facts['os_name'] | default(ansible_facts['distribution'] | default('unknown')) }}"
+              updates_before: []
+              updates_count: 0
+              mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
+              status: FAILED
+              error: >-
+                {{ ansible_failed_task.name | default('task') }}:
+                {{ ansible_failed_result.msg | default('failed') | string | truncate(300) }}
+              reboot_needed: false
+              timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          tags: [always]
+
+# ─── Rocky Linux ────────────────────────────────────────────────────────────
+- name: "Apply patches: Rocky Linux"
+  hosts: rocky_servers
+  become: true
+  gather_facts: true
+  serial: "{{ patch_serial | default('100%') }}"
+  tasks:
+    # A failure is recorded (rescue) so the host shows up as FAILED in the
+    # report and the email; the last play then fails the host for real.
+    - name: Patch the host and record the result
+      block:
+        - name: List available updates before patching
+          ansible.builtin.command: "dnf -q check-update {{ '--security' if (patch_security_only | bool) else '' }}"
+          register: pre_patch_list
+          changed_when: false
+          failed_when: pre_patch_list.rc not in [0, 100]
+          tags: [always]
+
+        - name: Install all updates
+          ansible.builtin.dnf:
+            name: "*"
+            state: latest
+            exclude: "{{ patch_excluded_packages | default([]) }}"
+          when:
+            - not (patch_dry_run | bool)
+            - not (patch_security_only | bool)
+          tags: [full_update, security_only]
+
+        - name: Install security updates only
+          ansible.builtin.dnf:
+            name: "*"
+            state: latest
+            security: true
+            exclude: "{{ patch_excluded_packages | default([]) }}"
+          when:
+            - not (patch_dry_run | bool)
+            - patch_security_only | bool
+          tags: [full_update, security_only]
+
+        - name: Clean dnf cache
+          ansible.builtin.command: dnf clean packages
+          changed_when: false
+          when:
+            - patch_autoclean | default(true) | bool
+            - not (patch_dry_run | bool)
+          tags: [always]
+
+        # rc 1 = reboot needed
+        - name: Check if a reboot is required
+          ansible.builtin.command: dnf needs-restarting -r
+          register: needs_restarting
+          changed_when: false
+          failed_when: false
+          tags: [always]
+
+        - name: Reboot
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ patch_reboot_timeout }}"
+            msg: "Reboot by Patch Manager after updates"
+          register: reboot_result
+          when:
+            - needs_restarting.rc == 1
+            - patch_reboot_allowed | bool
+            - not (patch_dry_run | bool)
+          tags: [always]
+
+        - name: Record the result
+          ansible.builtin.set_fact:
+            patch_result:
+              host: "{{ inventory_hostname }}"
+              os: "Rocky Linux {{ ansible_facts['distribution_version'] }}"
+              updates_before: "{{ pkg_lines }}"
+              updates_count: "{{ pkg_lines | length }}"
+              mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
+              status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
+              reboot_needed: "{{ needs_restarting.rc == 1 and not (reboot_result is changed) }}"
+              timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          vars:
+            # Everything after "Obsoleting Packages" repeats packages already listed.
+            pkg_lines: "{{ pre_patch_list.stdout.split('Obsoleting Packages')[0].splitlines() | select('match', '^\\S+\\.\\S+\\s+\\S+\\s+\\S+\\s*$') | list }}"
+          tags: [always]
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            patch_result:
+              host: "{{ inventory_hostname }}"
+              os: "{{ ansible_facts['os_name'] | default(ansible_facts['distribution'] | default('unknown')) }}"
+              updates_before: []
+              updates_count: 0
+              mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
+              status: FAILED
+              error: >-
+                {{ ansible_failed_task.name | default('task') }}:
+                {{ ansible_failed_result.msg | default('failed') | string | truncate(300) }}
+              reboot_needed: false
+              timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          tags: [always]
+
+# ─── macOS ──────────────────────────────────────────────────────────────────
+- name: "Apply patches: macOS"
+  hosts: macos_servers
+  become: true
+  gather_facts: true
+  serial: 1  # softwareupdate is slow and downloads are large
+  tasks:
+    # A failure is recorded (rescue) so the host shows up as FAILED in the
+    # report and the email; the last play then fails the host for real.
+    - name: Patch the host and record the result
+      block:
+        - name: List available updates
+          ansible.builtin.command: softwareupdate --list
+          register: su_list
+          changed_when: false
+          tags: [always]
+
+        - name: Extract update labels
+          ansible.builtin.set_fact:
+            macos_labels: >-
+              {{ su_list.stdout_lines | select('match', '^\s*\* Label: ')
+                 | map('regex_replace', '^\s*\* Label: ', '') | list }}
+            macos_restart_needed: "{{ 'Action: restart' in su_list.stdout }}"
+          tags: [always]
+
+        # --recommended is Apple's closest equivalent to "security only".
+        # On Apple silicon OS updates need --user/--stdinpass (volume owner).
+        - name: Install updates
+          ansible.builtin.command:
+            argv: "{{ base_cmd + creds + restart }}"
+            stdin: "{{ patch_macos_update_password if (patch_macos_update_user | length > 0) else omit }}"
+          vars:
+            base_cmd: >-
+              {{ ['softwareupdate', '--install', '--agree-to-license']
+                 + (['--recommended'] if (patch_security_only | bool) else ['--all']) }}
+            creds: >-
+              {{ ['--user', patch_macos_update_user, '--stdinpass']
+                 if (patch_macos_update_user | length > 0) else [] }}
+            restart: >-
+              {{ ['--restart'] if (patch_reboot_allowed | bool and patch_macos_allow_restart | bool) else [] }}
+          register: macos_install
+          changed_when: (macos_install.rc | default(1)) == 0
+          # With --restart the Mac can go down before the command returns.
+          ignore_unreachable: true
+          no_log: "{{ patch_macos_update_user | length > 0 }}"
+          when:
+            - not (patch_dry_run | bool)
+            - macos_labels | length > 0
+          tags: [full_update, security_only]
+
+        - name: Wait for the Mac to come back after a restart
+          ansible.builtin.wait_for_connection:
+            delay: 30
+            timeout: "{{ patch_reboot_timeout }}"
+          when:
+            - not (patch_dry_run | bool)
+            - macos_labels | length > 0
+            - macos_restart_needed | bool
+            - patch_reboot_allowed | bool
+            - patch_macos_allow_restart | bool
+          tags: [always]
+
+        - name: Record the result
+          ansible.builtin.set_fact:
+            patch_result:
+              host: "{{ inventory_hostname }}"
+              os: "macOS {{ ansible_facts['distribution_version'] | default('') }}"
+              updates_before: "{{ macos_labels }}"
+              updates_count: "{{ macos_labels | length }}"
+              mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
+              status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
+              reboot_needed: >-
+                {{ (macos_restart_needed | bool)
+                   and not (patch_reboot_allowed | bool and patch_macos_allow_restart | bool)
+                   and not (patch_dry_run | bool) }}
+              timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          tags: [always]
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            patch_result:
+              host: "{{ inventory_hostname }}"
+              os: "{{ ansible_facts['os_name'] | default(ansible_facts['distribution'] | default('unknown')) }}"
+              updates_before: []
+              updates_count: 0
+              mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
+              status: FAILED
+              error: >-
+                {{ ansible_failed_task.name | default('task') }}:
+                {{ ansible_failed_result.msg | default('failed') | string | truncate(300) }}
+              reboot_needed: false
+              timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          tags: [always]
+
+# ─── Windows ────────────────────────────────────────────────────────────────
+- name: "Apply patches: Windows"
+  hosts: windows_servers
+  gather_facts: true
+  serial: "{{ patch_serial | default('100%') }}"
+  vars:
+    win_categories: >-
+      {{ patch_windows_security_categories if (patch_security_only | bool) else patch_windows_categories }}
+  tasks:
+    # A failure is recorded (rescue) so the host shows up as FAILED in the
+    # report and the email; the last play then fails the host for real.
+    - name: Patch the host and record the result
+      block:
+        - name: Search for updates
+          ansible.windows.win_updates:
+            category_names: "{{ win_categories }}"
+            reject_list: "{{ patch_windows_reject_list }}"
+            state: searched
+          register: win_search
+          tags: [always]
+
+        - name: Install updates
+          ansible.windows.win_updates:
+            category_names: "{{ win_categories }}"
+            reject_list: "{{ patch_windows_reject_list }}"
+            state: installed
+            reboot: "{{ (patch_reboot_allowed | bool) and (patch_windows_auto_reboot | bool) }}"
+            reboot_timeout: "{{ patch_windows_reboot_timeout }}"
+          register: win_install
+          when:
+            - not (patch_dry_run | bool)
+            - (win_search.found_update_count | int) > 0
+          tags: [full_update, security_only]
+
+        - name: Record the result
+          ansible.builtin.set_fact:
+            patch_result:
+              host: "{{ inventory_hostname }}"
+              os: "{{ ansible_facts['os_name'] | default('Windows') }}"
+              updates_before: "{{ win_search.updates | default({}) | dict2items | map(attribute='value.title') | list }}"
+              updates_count: "{{ win_search.found_update_count | default(0) }}"
+              installed_count: "{{ win_install.installed_update_count | default(0) }}"
+              mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
+              status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
+              reboot_needed: "{{ win_install.reboot_required | default(false) }}"
+              timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          tags: [always]
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            patch_result:
+              host: "{{ inventory_hostname }}"
+              os: "{{ ansible_facts['os_name'] | default(ansible_facts['distribution'] | default('unknown')) }}"
+              updates_before: []
+              updates_count: 0
+              mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
+              status: FAILED
+              error: >-
+                {{ ansible_failed_task.name | default('task') }}:
+                {{ ansible_failed_result.msg | default('failed') | string | truncate(300) }}
+              reboot_needed: false
+              timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          tags: [always]
+
+# ─── Reports and email ──────────────────────────────────────────────────────
+# hosts: all (not localhost) so it still runs with --limit. Unreachable hosts
+# never get here; they only appear in the Ansible recap.
+- name: "Write patch reports and send summary"
+  hosts: all
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Create report directory on the controller
+      ansible.builtin.file:
+        path: "{{ patch_report_dir }}/patch-runs"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      vars: &controller_vars
+        ansible_become: false
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: patch_report_enabled | bool
+
+    - name: Write patch result on the controller
+      ansible.builtin.copy:
+        content: "{{ patch_result | to_nice_json }}\n"
+        dest: "{{ patch_report_dir }}/patch-runs/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      vars: *controller_vars
+      when:
+        - patch_report_enabled | bool
+        - patch_result is defined
+
+    - name: Send results email
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        username: "{{ smtp_user | default(omit, true) }}"
+        password: "{{ smtp_password | default(omit, true) }}"
+        secure: "{{ smtp_secure }}"
+        from: "{{ email_from }}"
+        to: "{{ email_to }}"
+        subject: >-
+          {{ email_subject_prefix }} Patching
+          {{ 'FAILED on some hosts' if (all_results | selectattr('status', 'equalto', 'FAILED') | list | length > 0)
+             else ('dry run' if (patch_dry_run | bool) else 'complete') }}:
+          {{ all_results | length }} hosts, {{ now().strftime('%Y-%m-%d') }}
+        subtype: html
+        body: "{{ lookup('ansible.builtin.template', 'patch_report_email.html.j2') }}"
+      delegate_to: localhost
+      run_once: true
+      vars:
+        <<: *controller_vars
+        all_results: >-
+          {{ ansible_play_hosts_all | map('extract', hostvars)
+             | selectattr('patch_result', 'defined') | map(attribute='patch_result') | list }}
+      when:
+        - email_enabled | bool
+        - all_results | length > 0
+
+    - name: Fail the hosts where patching failed
+      ansible.builtin.fail:
+        msg: "Patching failed: {{ patch_result.error | default('see the task log') }}"
+      when:
+        - patch_result is defined
+        - patch_result.status == 'FAILED'
