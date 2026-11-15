@@ -360,8 +360,10 @@ async def slack_webhook(request: Request) -> JSONResponse:
     ):
         raise HTTPException(status_code=401, detail="Invalid Slack signature")
 
-    form = {k: v[0] for k, v in parse_qs(body.decode("utf-8"), keep_blank_values=True).items()}
-    text = form.get("text", "").strip()
+    # errors="replace": a signed body that is not valid UTF-8 is not a reason for a 500.
+    raw_form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    form = {k: v[0] for k, v in raw_form.items()}
+    text = form.get("text", "").strip()[:4000]
     user_id = form.get("user_id", "")
     user_name = form.get("user_name", "unknown")
     response_url = form.get("response_url")

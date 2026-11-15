@@ -104,6 +104,8 @@ class AgentState:
     forced_action: ActionType | None = None
     action: ActionType = ActionType.ASK_QUESTION
     target_hosts: str | None = None  # validated Ansible --limit expression
+    # The target that was asked for, when it failed validation and was dropped.
+    rejected_target: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
 
     # ─── Inventory ──────────────────────────────────────────────────────
@@ -119,6 +121,7 @@ class AgentState:
     # ─── Planning and status ────────────────────────────────────────────
     patch_plan: PatchPlan | None = None
     plan_id: str | None = None
+    plan_refused: str = ""  # why build_patch_plan did not create a plan
     recent_tasks: list[dict[str, Any]] = field(default_factory=list)
 
     # ─── Output ─────────────────────────────────────────────────────────

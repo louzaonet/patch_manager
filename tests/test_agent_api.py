@@ -424,3 +424,85 @@ async def test_unknown_cve_is_negatively_cached(env, monkeypatch):
     await scanner.lookup_cves(["CVE-2026-9999"])
     again = await scanner.lookup_cves(["CVE-2026-9999"])
     assert route.call_count == 1 and again["CVE-2026-9999"]["severity"] == "UNKNOWN"
+
+
+# ─── Regressions fixed in 1.0.2 ─────────────────────────────────────────
+
+
+async def test_no_plan_when_target_is_rejected(env, fake_llm):
+    # A typo in the target used to become a plan for every host.
+    from app.agents.graph import run_agent
+    from app.services.plans import plan_store
+
+    fake_llm()
+    before = len(await plan_store.list())
+    state = await run_agent(AgentState(user_message="plan", forced_action=ActionType.APPLY_PATCHES,
+                                       target_hosts="ubuntu-web-0l"))
+    assert state.plan_id is None and state.patch_plan is None
+    assert any("No plan was created" in e for e in state.errors)
+    assert state.briefing.startswith("**No plan was created:**")
+    assert len(await plan_store.list()) == before
+
+
+async def test_no_plan_when_llm_target_is_rejected(env, fake_llm):
+    from app.agents.graph import run_agent
+
+    fake_llm(intent={"action": "apply_patches", "target_hosts": "databases"})
+    state = await run_agent(AgentState(user_message="patch the databases"))
+    assert state.plan_id is None
+    assert any("databases" in e for e in state.errors)
+
+
+async def test_no_plan_without_hosts(env, fake_llm):
+    # Empty inventory: the plan would have no limit and Semaphore would run it everywhere.
+    from app.agents.graph import run_agent
+
+    fake_llm()
+    env["inventory"].write_text("all: {}\n")
+    state = await run_agent(AgentState(user_message="plan", forced_action=ActionType.APPLY_PATCHES))
+    assert state.plan_id is None
+    assert any("no managed hosts" in e for e in state.errors)
+
+
+async def test_rejected_target_still_allowed_for_read_only_actions(env, fake_llm):
+    from app.agents.graph import run_agent
+
+    fake_llm()
+    state = await run_agent(AgentState(user_message="risk", forced_action=ActionType.ANALYZE_RISK,
+                                       target_hosts="nope"))
+    assert state.target_hosts is None and not state.errors
+    assert any("Ignored target" in w for w in state.warnings)
+
+
+async def test_webhooks_answer_401_to_non_ascii_signatures(client, slack_env, monkeypatch):
+    from app.config import get_settings
+
+    r = await client.post("/api/integrations/slack", content=b"text=x",
+                          headers={"X-Slack-Request-Timestamp": str(int(time.time())),
+                                   "X-Slack-Signature": b"v0=\xe9"})
+    assert r.status_code == 401
+
+    monkeypatch.setenv("TEAMS_ENABLED", "true")
+    monkeypatch.setenv("TEAMS_OUTGOING_SECRET", base64.b64encode(b"k").decode())
+    get_settings.cache_clear()
+    r = await client.post("/api/integrations/teams", content=b"{}", headers={"Authorization": b"HMAC \xe9"})
+    assert r.status_code == 401
+
+
+async def test_slack_body_with_invalid_utf8(client, slack_env, monkeypatch):
+    monkeypatch.setattr("app.api.routes._spawn", lambda coro: coro.close())
+    body = b"text=check+\xff\xfe&user_id=U222&user_name=bob"
+    r = await client.post("/api/integrations/slack", content=body, headers=_slack_headers("s3cret", body))
+    assert r.status_code == 200
+
+
+@respx.mock
+async def test_kev_with_unexpected_shape_is_ignored(env, monkeypatch):
+    from app.config import get_settings
+    from app.tools.cve_scanner import CVEScanner
+
+    monkeypatch.setenv("KEV_ENABLED", "true")
+    get_settings.cache_clear()
+    scanner = CVEScanner()
+    respx.get(scanner.settings.kev_url).mock(return_value=httpx.Response(200, json=["not", "the", "catalog"]))
+    assert await scanner.get_kev_ids() == {}

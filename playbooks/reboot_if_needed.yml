@@ -28,8 +28,11 @@
   gather_facts: false
   serial: "{{ patch_serial | default('100%') }}"
   tasks:
+    # rc 1 alone is not enough: dnf exits 1 on errors too (see apply_patches.yml).
     - name: Check if a reboot is required
       ansible.builtin.command: dnf needs-restarting -r
+      environment:
+        LC_ALL: C
       register: needs_restarting
       changed_when: false
       failed_when: false
@@ -38,7 +41,7 @@
       ansible.builtin.reboot:
         reboot_timeout: "{{ patch_reboot_timeout }}"
         msg: "Reboot by Patch Manager"
-      when: needs_restarting.rc == 1
+      when: needs_restarting.rc == 1 and 'Reboot is required' in needs_restarting.stdout
 
 - name: "Conditional reboot: Windows"
   hosts: windows_servers

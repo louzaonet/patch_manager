@@ -76,9 +76,13 @@
       changed_when: false
       failed_when: false
 
-    # rc 1 = reboot needed. Needs dnf-plugins-core (installed by default on Rocky 9/10).
+    # rc 1 means "reboot needed", but dnf also exits 1 on any error, including
+    # a missing needs-restarting plugin (dnf-plugins-core). The message is
+    # checked too, so an error is never read as a pending reboot.
     - name: Check if a reboot is pending
       ansible.builtin.command: dnf needs-restarting -r
+      environment:
+        LC_ALL: C
       register: needs_restarting
       changed_when: false
       failed_when: false
@@ -97,7 +101,7 @@
           packages: "{{ pkg_lines | map('regex_replace', '^(\\S+)\\.\\S+\\s.*$', '\\1') | list }}"
           security_packages: "{{ sec_pkgs }}"
           cves: "{{ dnf_cves.stdout | regex_findall('CVE-\\d{4}-\\d{4,}') | unique | list }}"
-          reboot_required: "{{ needs_restarting.rc == 1 }}"
+          reboot_required: "{{ needs_restarting.rc == 1 and 'Reboot is required' in needs_restarting.stdout }}"
       vars:
         # Everything after "Obsoleting Packages" repeats packages already listed.
         pkg_lines: "{{ dnf_updates.stdout.split('Obsoleting Packages')[0].splitlines() | select('match', '^\\S+\\.\\S+\\s+\\S+\\s+\\S+\\s*$') | list }}"

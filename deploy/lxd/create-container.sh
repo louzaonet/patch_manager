@@ -33,9 +33,14 @@ echo "Waiting for the container to finish booting..."
 lxc exec "$NAME" -- cloud-init status --wait >/dev/null 2>&1 || sleep 10
 
 echo "Copying the repository to /opt/patch-manager (without local secrets)..."
+# install.sh makes /opt/patch-manager world-readable, so vault password files
+# and private keys lying around in the working tree must not travel with it.
 tar -C "$REPO_DIR" \
   --exclude=.git --exclude=.venv --exclude='__pycache__' \
+  --exclude=.pytest_cache --exclude=.ruff_cache \
   --exclude=config/.env --exclude=config/ai.env --exclude='docker/nginx/certs/*' \
+  --exclude='.vault_pass*' --exclude='vault_password*' --exclude='*.vault' \
+  --exclude='id_rsa*' --exclude='id_ed25519*' --exclude='id_ecdsa*' --exclude='*.pem' --exclude='*.key' \
   -czf - . | lxc exec "$NAME" -- bash -c 'mkdir -p /opt/patch-manager && tar -C /opt/patch-manager -xzf -'
 
 if [[ "$MODE" == "docker" ]]; then

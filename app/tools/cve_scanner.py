@@ -139,16 +139,23 @@ class CVEScanner:
             _cache.set("kev", {}, 900)  # don't hammer it on every request
             return {}
 
+        # Valid JSON with another shape (a proxy error page, a format change)
+        # must not take the whole analysis down.
+        entries = data.get("vulnerabilities") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            logger.warning("kev_unexpected_format")
+            _cache.set("kev", {}, 900)
+            return {}
         kev = {
-            v.get("cveID"): {
+            v["cveID"]: {
                 "vendor": v.get("vendorProject", ""),
                 "product": v.get("product", ""),
                 "date_added": v.get("dateAdded", ""),
                 "due_date": v.get("dueDate", ""),
                 "ransomware": v.get("knownRansomwareCampaignUse", "Unknown"),
             }
-            for v in data.get("vulnerabilities", [])
-            if v.get("cveID")
+            for v in entries
+            if isinstance(v, dict) and isinstance(v.get("cveID"), str)
         }
         _cache.set("kev", kev, _KEV_TTL)
         logger.info("kev_loaded", entries=len(kev))

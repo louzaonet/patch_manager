@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.2 (2026-11-15)
+
+### Security
+
+- Native install: the `X-Forwarded-For` fix in 1.0.1 only covered Docker. When connections reach nginx from 127.0.0.1 (the LXD proxy device described in the wiki), uvicorn trusted nginx and took the address the client had put in the header, so the failed-login throttle could be avoided the same way. nginx now sends only the address it sees. Behind the proxy device all clients share one address, and so one throttle; the nginx site ships commented settings to keep real addresses with `proxy_protocol`.
+- Patch plans: a target that failed validation (a typo in a host name, a group that does not exist) was dropped and the plan was built for every host. No plan is created now. Read-only actions still fall back to all hosts with a warning.
+- Patch plans: no plan either when the service sees no hosts in scope (empty or unreadable inventory). That plan had no limit and, once approved, Semaphore would have run it on every host.
+- Limit validation: wildcards were checked with a hand-built regular expression that backtracks exponentially. A target with many `*` froze the service (measured: 0.2 s with 10 wildcards, 6 s with 18). It uses `fnmatch` now, as Ansible does. It required an authenticated user.
+- Slack and Teams webhooks: a signature header with non-ASCII characters raised an exception and returned 500 instead of 401. It did not let anyone past the signature check.
+- `create-container.sh`: Vault password files and private keys found in the working tree are no longer copied into the container (`install.sh` makes that copy readable by every user).
+
+### Fixes
+
+- Plans: the host list of a plan was computed by applying the limit left to right. Ansible takes the union of the plain patterns first, then the intersections (`&`), then the exclusions (`!`), so with limits such as `a,&b,c` the plan listed hosts Ansible would not touch. It now matches `ansible --list-hosts`.
+- Rocky: `dnf needs-restarting -r` exits 1 when a reboot is needed, but dnf also exits 1 on any error, for instance when the plugin (`dnf-plugins-core`) is missing. That error was read as "reboot pending" and `apply_patches.yml` rebooted the host. The output message is checked as well now.
+- `ansible.cfg`: with `gathering = smart` and a fact cache, a run within the next hour reused old facts. `reboot_if_needed.yml` missed Windows reboots pending since the last patch run, and reports could carry the previous OS version. Facts are now gathered on every run and not cached.
+- `setup_macos_ssh.sh`: run with `sudo` and no arguments it set up root instead of the user who called sudo; sudo ignored the sudoers file of a user with a dot in the name; the file was installed before being validated; and the last step could abort the script (`head` under `pipefail`). The home directory is no longer resolved with `eval`.
+- `setup_winrm.ps1`: requires an elevated console and stops at the first error. Before, a failure creating the certificate or the listener still ended with a success message.
+- An inventory that is valid YAML with the wrong shape (hosts as a list, `vars` as a string) caused a 500 on every request. It is now logged and treated as an empty inventory. Same for a KEV catalogue in an unexpected format and a Slack body that is not valid UTF-8.
+- Slack: the command text is capped at 4,000 characters, as in Teams.
+- `.gitignore` and `.ansible-lint` were missing from the repository; they are back.
+
+### Tested
+
+- 86 automated tests, ruff, shellcheck, ansible-lint (production profile) and `ansible-playbook --syntax-check`.
+- The native nginx site, tested with nginx 1.24 in front of the service: with the old file, 12 failed logins with a changing `X-Forwarded-For` never hit the throttle; with the new one the eleventh gets a 429.
+- The Rocky check play, run against a fake `dnf` with sample output (reboot pending, no reboot, plugin missing, error).
+- Not tested: real Rocky, macOS and Windows hosts; the macOS and PowerShell scripts were not run; the LXD scripts and the Docker images; `proxy_protocol` with a real LXD device (only the nginx syntax was checked).
+
 ## 1.0.1 (2026-11-10)
 
 ### Security

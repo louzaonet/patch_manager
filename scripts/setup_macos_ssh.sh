@@ -4,19 +4,34 @@
 # =============================================================================
 # Run on each Mac as a user with admin privileges:
 #   chmod +x setup_macos_ssh.sh
-#   sudo ./setup_macos_ssh.sh
+#   sudo ./setup_macos_ssh.sh [user] ["ssh public key"]
+#
+# user defaults to the account that called sudo.
 # =============================================================================
 
 set -euo pipefail
 
-echo "=== Configuring macOS for Ansible ==="
+# Under sudo, whoami is root: take the account that invoked it.
+ANSIBLE_USER="${1:-${SUDO_USER:-$(whoami)}}"
+PUB_KEY="${2:-}"
+
+if [[ ! "$ANSIBLE_USER" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || ! id "$ANSIBLE_USER" >/dev/null 2>&1; then
+    echo "User '$ANSIBLE_USER' does not exist. Usage: sudo $0 [user] [ssh_public_key]" >&2
+    exit 1
+fi
+if [ "$ANSIBLE_USER" = "root" ]; then
+    echo "Refusing to set up root. Usage: sudo $0 [user] [ssh_public_key]" >&2
+    exit 1
+fi
+
+echo "=== Configuring macOS for Ansible (user: $ANSIBLE_USER) ==="
 
 # 1. Enable Remote Login (SSH)
 echo "[1/5] Enabling SSH (Remote Login)..."
 # On recent macOS this needs Full Disk Access for the terminal app. If it
 # fails, enable it in System Settings > General > Sharing > Remote Login.
 if ! sudo systemsetup -setremotelogin on 2>/dev/null; then
-    echo "  -> Could not enable Remote Login from the CLI."
+    echo "  → Could not enable Remote Login from the CLI."
     echo "     Turn it on in System Settings > General > Sharing > Remote Login, then re-run."
 fi
 
@@ -35,24 +50,35 @@ else
 fi
 
 # 3. Configure passwordless sudo for the Ansible user
-ANSIBLE_USER="${1:-$(whoami)}"
 echo "[3/5] Configuring sudo NOPASSWD for '$ANSIBLE_USER'..."
 
-SUDOERS_FILE="/etc/sudoers.d/ansible_${ANSIBLE_USER}"
+# sudo ignores files in sudoers.d whose name contains a dot.
+SUDOERS_FILE="/etc/sudoers.d/ansible_${ANSIBLE_USER//./_}"
 if [ ! -f "$SUDOERS_FILE" ]; then
-    echo "${ANSIBLE_USER} ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_FILE" > /dev/null
-    sudo chmod 0440 "$SUDOERS_FILE"
-    sudo visudo -cf "$SUDOERS_FILE"
-    echo "  → Sudoers file created: $SUDOERS_FILE"
+    # Validate a temporary copy first: a broken file in sudoers.d locks sudo.
+    SUDOERS_TMP="$(mktemp)"
+    echo "${ANSIBLE_USER} ALL=(ALL) NOPASSWD: ALL" > "$SUDOERS_TMP"
+    if sudo visudo -cf "$SUDOERS_TMP" >/dev/null; then
+        sudo install -m 0440 -o root -g wheel "$SUDOERS_TMP" "$SUDOERS_FILE"
+        rm -f "$SUDOERS_TMP"
+        echo "  → Sudoers file created: $SUDOERS_FILE"
+    else
+        rm -f "$SUDOERS_TMP"
+        echo "  → visudo rejected the sudoers entry; nothing was installed." >&2
+        exit 1
+    fi
 else
     echo "  → Already exists: $SUDOERS_FILE"
 fi
 
 # 4. Install SSH key (if provided as second argument)
-PUB_KEY="${2:-}"
 if [ -n "$PUB_KEY" ]; then
     echo "[4/5] Installing SSH public key..."
-    ANSIBLE_HOME=$(eval echo "~${ANSIBLE_USER}")
+    ANSIBLE_HOME="$(dscl . -read "/Users/${ANSIBLE_USER}" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')"
+    if [ -z "$ANSIBLE_HOME" ] || [ ! -d "$ANSIBLE_HOME" ]; then
+        echo "  → Home directory of '$ANSIBLE_USER' not found." >&2
+        exit 1
+    fi
     SSH_DIR="${ANSIBLE_HOME}/.ssh"
     AUTH_KEYS="${SSH_DIR}/authorized_keys"
 
@@ -67,16 +93,21 @@ if [ -n "$PUB_KEY" ]; then
     fi
 
     sudo chmod 600 "$AUTH_KEYS"
-    sudo chown -R "${ANSIBLE_USER}:staff" "$SSH_DIR"
+    sudo chown -R "${ANSIBLE_USER}:$(id -gn "$ANSIBLE_USER")" "$SSH_DIR"
 else
     echo "[4/5] No SSH key provided (pass as second argument)"
-    echo "  → Usage: $0 [user] [ssh_public_key]"
+    echo "  → Usage: sudo $0 [user] [ssh_public_key]"
 fi
 
 # 5. Verify non-interactive softwareupdate access
 echo "[5/5] Verifying softwareupdate access..."
-softwareupdate --list 2>&1 | head -5
-echo "  → softwareupdate accessible"
+# sed reads all the output; "head -5" closes the pipe early and, with
+# pipefail, the SIGPIPE in softwareupdate aborted the script here.
+if softwareupdate --list 2>&1 | sed -n '1,5p'; then
+    echo "  → softwareupdate accessible"
+else
+    echo "  → softwareupdate --list failed; check it by hand."
+fi
 
 echo ""
 echo "=== Verification ==="

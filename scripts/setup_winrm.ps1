@@ -6,6 +6,12 @@
 #   powershell -ExecutionPolicy Bypass -File setup_winrm.ps1
 # =============================================================================
 
+#Requires -RunAsAdministrator
+
+# Stop at the first error. Without this a failed step (no certificate, a
+# listener that could not be created) still ended with "configured successfully".
+$ErrorActionPreference = "Stop"
+
 Write-Host "=== Configuring WinRM for Ansible ===" -ForegroundColor Cyan
 
 # 1. Enable WinRM

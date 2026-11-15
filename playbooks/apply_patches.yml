@@ -201,9 +201,13 @@
             - not (patch_dry_run | bool)
           tags: [always]
 
-        # rc 1 = reboot needed
+        # rc 1 means "reboot needed", but dnf also exits 1 on any error
+        # (e.g. dnf-plugins-core missing). The message is checked too, so an
+        # error never reboots the host.
         - name: Check if a reboot is required
           ansible.builtin.command: dnf needs-restarting -r
+          environment:
+            LC_ALL: C
           register: needs_restarting
           changed_when: false
           failed_when: false
@@ -215,7 +219,7 @@
             msg: "Reboot by Patch Manager after updates"
           register: reboot_result
           when:
-            - needs_restarting.rc == 1
+            - needs_restarting.rc == 1 and 'Reboot is required' in needs_restarting.stdout
             - patch_reboot_allowed | bool
             - not (patch_dry_run | bool)
           tags: [always]
@@ -229,7 +233,7 @@
               updates_count: "{{ pkg_lines | length }}"
               mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
               status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
-              reboot_needed: "{{ needs_restarting.rc == 1 and not (reboot_result is changed) }}"
+              reboot_needed: "{{ (needs_restarting.rc == 1 and 'Reboot is required' in needs_restarting.stdout) and not (reboot_result is changed) }}"
               timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
           vars:
             # Everything after "Obsoleting Packages" repeats packages already listed.

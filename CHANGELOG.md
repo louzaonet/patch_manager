@@ -1,5 +1,34 @@
 # Registro de cambios
 
+## 1.0.2 (2026-11-15)
+
+### Seguridad
+
+- Instalación nativa: el arreglo de `X-Forwarded-For` de la 1.0.1 solo cubría Docker. Cuando las conexiones llegan a nginx desde 127.0.0.1 (el dispositivo proxy de LXD que describe la wiki), uvicorn se fiaba de nginx y tomaba la dirección que el cliente había puesto en la cabecera, así que el límite de intentos de login fallidos se evitaba igual. nginx manda ahora solo la dirección que ve. Detrás del dispositivo proxy todos los clientes comparten dirección y, por tanto, el mismo límite; el sitio de nginx trae comentados los ajustes para conservar las direcciones reales con `proxy_protocol`.
+- Planes de parcheo: un destino que no pasaba la validación (una errata en el nombre de un host, un grupo que no existe) se descartaba y el plan se preparaba para todos los hosts. Ahora no se crea ningún plan. Las acciones de solo lectura siguen usando todos los hosts con un aviso.
+- Planes de parcheo: tampoco se crea un plan cuando el servicio no ve ningún host en el alcance (inventario vacío o ilegible). Ese plan no llevaba límite y, al aprobarlo, Semaphore lo habría ejecutado en todos los hosts.
+- Validación de límites: los comodines se comprobaban con una expresión regular hecha a mano que retrocede de forma exponencial. Un destino con muchos `*` dejaba el servicio bloqueado (medido: 0,2 s con 10 comodines, 6 s con 18). Ahora se usa `fnmatch`, como Ansible. Hacía falta estar autenticado.
+- Webhooks de Slack y Teams: una cabecera de firma con caracteres no ASCII provocaba una excepción y un 500 en lugar de un 401. No permitía saltarse la firma.
+- `create-container.sh`: los ficheros de contraseña de Vault y las claves privadas que haya en el directorio de trabajo ya no se copian al contenedor (`install.sh` deja esa copia legible para todos los usuarios).
+
+### Correcciones
+
+- Planes: la lista de hosts de un plan se calculaba aplicando el límite de izquierda a derecha. Ansible une primero los patrones normales, luego aplica las intersecciones (`&`) y al final las exclusiones (`!`), así que con límites como `a,&b,c` el plan mostraba hosts que Ansible no iba a tocar. Ahora coincide con `ansible --list-hosts`.
+- Rocky: `dnf needs-restarting -r` devuelve 1 cuando hace falta reiniciar, pero dnf también devuelve 1 ante cualquier error, por ejemplo si falta el plugin (`dnf-plugins-core`). Ese error se leía como "reinicio pendiente" y `apply_patches.yml` reiniciaba el host. Ahora se comprueba además el mensaje de salida.
+- `ansible.cfg`: con `gathering = smart` y caché de facts, una ejecución dentro de la hora siguiente reutilizaba facts antiguos. `reboot_if_needed.yml` no veía en Windows los reinicios pendientes desde el último parcheo y los informes podían llevar la versión de SO anterior. Los facts se recogen ahora en cada ejecución y no se cachean.
+- `setup_macos_ssh.sh`: ejecutado con `sudo` y sin argumentos configuraba al usuario root en vez de al que llamaba a sudo; el fichero de sudoers de un usuario con punto en el nombre lo ignoraba sudo; el fichero se instalaba antes de validarlo; y el paso final podía abortar el script (`head` con `pipefail`). El directorio personal ya no se obtiene con `eval`.
+- `setup_winrm.ps1`: exige una consola de administrador y se detiene en el primer error. Antes, si fallaba la creación del certificado o del listener, terminaba diciendo que todo había ido bien.
+- Un inventario con YAML válido pero con forma incorrecta (hosts como lista, `vars` como texto) provocaba un 500 en todas las peticiones. Ahora se registra el error y se trata como inventario vacío. Lo mismo con un catálogo KEV con formato inesperado y con un cuerpo de Slack que no sea UTF-8 válido.
+- Slack: el texto del comando se recorta a 4.000 caracteres, como en Teams.
+- `.gitignore` y `.ansible-lint` no estaban en el repositorio; vuelven a estar.
+
+### Pruebas
+
+- 86 tests automáticos, ruff, shellcheck, ansible-lint (perfil production) y `ansible-playbook --syntax-check`.
+- El sitio nativo de nginx, probado con nginx 1.24 delante del servicio: con el fichero anterior, 12 logins fallidos cambiando `X-Forwarded-For` no llegaban al bloqueo; con el nuevo, el undécimo recibe un 429.
+- El play de comprobación de Rocky, ejecutado contra un `dnf` simulado con salidas de ejemplo (reinicio pendiente, sin reinicio, plugin ausente, error).
+- Sin probar: hosts reales Rocky, macOS y Windows; los scripts de macOS y PowerShell no se han ejecutado; los scripts de LXD y las imágenes de Docker; `proxy_protocol` con un dispositivo LXD real (solo se ha validado la sintaxis de nginx).
+
 ## 1.0.1 (2026-11-10)
 
 ### Seguridad

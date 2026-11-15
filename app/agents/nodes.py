@@ -49,24 +49,38 @@ def hosts_in_scope(state: AgentState) -> list[HostInfo]:
 
     all_names = {h.hostname for h in state.all_hosts}
     groups = {g: set(m) for g, m in state.group_members.items()}
-    selected: set[str] | None = None
-    excluded: set[str] = set()
+
+    def members_of(name: str) -> set[str]:
+        if "*" not in name:
+            return groups.get(name, {name} if name in all_names else set())
+        found = {h for h in all_names if fnmatch.fnmatchcase(h, name)}
+        for group, hosts in groups.items():
+            if fnmatch.fnmatchcase(group, name):
+                found |= hosts
+        return found
+
+    # Ansible does not apply the tokens left to right: it takes the union of
+    # the plain patterns ("all" when there is none), then every &intersection,
+    # then every !exclusion. "a,&b,c" is (a or c) and b, not (a and b) or c.
+    plain: list[str] = []
+    intersect: list[str] = []
+    exclude: list[str] = []
     for token in state.target_hosts.split(","):
-        prefix, name = (token[0], token[1:]) if token[:1] in "!&" else ("", token)
-        if "*" in name:
-            members = {h for h in all_names if fnmatch.fnmatch(h, name)}
-            for group, hosts in groups.items():
-                if fnmatch.fnmatch(group, name):
-                    members |= hosts
+        token = token.strip()
+        if not token:
+            continue
+        if token[0] == "!":
+            exclude.append(token[1:])
+        elif token[0] == "&":
+            intersect.append(token[1:])
         else:
-            members = groups.get(name, {name} if name in all_names else set())
-        if prefix == "!":
-            excluded |= members
-        elif prefix == "&":
-            selected = (selected if selected is not None else set(all_names)) & members
-        else:
-            selected = (selected or set()) | members
-    names = (selected if selected is not None else all_names) - excluded
+            plain.append(token)
+
+    names = set().union(*(members_of(n) for n in plain)) if plain else set(all_names)
+    for name in intersect:
+        names &= members_of(name)
+    for name in exclude:
+        names -= members_of(name)
     return [h for h in state.all_hosts if h.hostname in names]
 
 
@@ -130,10 +144,14 @@ async def classify_intent(state: AgentState) -> dict[str, Any]:
     # Merge: explicit request fields (UI/API) override model guesses.
     opts = dict(state.options)
     target = state.target_hosts or intent.target_hosts
+    rejected = None
     try:
         target = validate_limit(target, {h.hostname for h in state.all_hosts}, set(state.known_groups))
     except ValueError as exc:
-        warnings.append(f"Ignored target '{target}': {exc}. Using all hosts.")
+        # Read-only actions fall back to all hosts. build_patch_plan refuses:
+        # a typo in a host name must not turn into a plan for everything.
+        rejected = str(target)[:200]
+        warnings.append(f"Ignored target '{rejected}': {exc}. Using all hosts.")
         target = None
 
     options = {
@@ -143,7 +161,13 @@ async def classify_intent(state: AgentState) -> dict[str, Any]:
     }
     action = ActionType(intent.action)
     logger.info("intent_classified", action=action.value, target=target, **options)
-    return {"action": action, "target_hosts": target, "options": options, "warnings": warnings}
+    return {
+        "action": action,
+        "target_hosts": target,
+        "rejected_target": rejected,
+        "options": options,
+        "warnings": warnings,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -211,6 +235,19 @@ async def build_patch_plan(state: AgentState) -> dict[str, Any]:
     names = {h.hostname for h in hosts}
     scored = [h for h in state.all_hosts if h.hostname in names]
     no_reboot = bool(state.options.get("no_reboot"))
+
+    # An approved plan runs with its limit, or on every host when it has none.
+    # So no plan when the requested target was dropped, or when the service
+    # sees no hosts (empty or unreadable inventory): approving it would patch
+    # hosts the approver never saw listed.
+    refused = ""
+    if state.rejected_target:
+        refused = f"'{state.rejected_target}' is not a host, group or valid limit in the inventory."
+    elif not scored:
+        refused = "there are no managed hosts in scope (check INVENTORY_PATH and the target)."
+    if refused:
+        logger.warning("patch_plan_refused", reason=refused, target=state.target_hosts)
+        return {"plan_refused": refused, "errors": [*state.errors, f"No plan was created: {refused}"]}
 
     # Risk groups are informational: the approved plan runs as one Semaphore
     # task over the whole scope (see PatchPhase).
@@ -357,6 +394,12 @@ async def generate_briefing(state: AgentState) -> dict[str, Any]:
             "dashboard (or `/patch approve <id>` in Slack)."
         )
 
+    if state.plan_refused:
+        plan_note = (
+            f"NO PATCH PLAN WAS CREATED: {state.plan_refused} "
+            "Say so clearly; there is nothing to approve."
+        )
+
     prompt = f"""You are a senior security engineer writing a patch briefing for an operations team.
 Be concise and concrete. Only state facts present in the data below; if data is missing or stale, say so.
 
@@ -389,6 +432,9 @@ and a short breakdown by host group. No filler, no generic advice."""
     except Exception as exc:
         logger.warning("briefing_llm_failed", error=str(exc))
         text = fallback_briefing(state, reason=str(exc)[:200])
+    if state.plan_refused:
+        # Not left to the model: Slack and Teams only show the briefing.
+        text = f"**No plan was created:** {state.plan_refused}\n\n{text}"
     logger.info("briefing_generated", length=len(text))
     return {"briefing": text, "ai_response": text}
 

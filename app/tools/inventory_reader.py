@@ -8,6 +8,7 @@ which plain yaml.safe_load rejects.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,7 +72,13 @@ class InventoryReader:
         root = data.get("all", data) if isinstance(data, dict) else {}
         direct: dict[str, set[str]] = {}
         children: dict[str, set[str]] = {}
-        self._walk_group("all", root or {}, {}, parsed, direct, children)
+        try:
+            self._walk_group("all", root or {}, {}, parsed, direct, children)
+        except (AttributeError, TypeError, ValueError) as exc:
+            # Valid YAML with the wrong shape (hosts as a list, vars as a
+            # string...). An empty inventory is safer than half of one.
+            logger.error("inventory_malformed", path=str(self.inventory_path), error=str(exc))
+            return ParsedInventory()
 
         # A group can be declared in several places (e.g. "production:
         # children: ubuntu_servers:" just references it), so resolve
@@ -184,8 +191,9 @@ def validate_limit(limit: str | None, known_hosts: set[str], known_groups: set[s
         if not _LIMIT_TOKEN_RE.match(name):
             raise ValueError(f"invalid characters in limit token '{token}'")
         if "*" in name:
-            pattern = re.compile("^" + re.escape(name).replace(r"\*", ".*") + "$")
-            if not any(pattern.match(n) for n in names):
+            # fnmatch, as Ansible does. A hand-built ".*" regex backtracks
+            # exponentially on patterns such as "*a*a*a*...b".
+            if not any(fnmatch.fnmatchcase(n, name) for n in names):
                 raise ValueError(f"limit pattern '{name}' matches no known host or group")
         elif name not in names:
             raise ValueError(f"unknown host or group '{name}'")

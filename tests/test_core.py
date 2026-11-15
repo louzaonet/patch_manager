@@ -246,3 +246,74 @@ def test_report_reader_bounds_host_supplied_values(env):
 def test_keyword_intent_plural_forms():
     assert keyword_intent("patches for ubuntu please", set()).action == "apply_patches"
     assert keyword_intent("send me the patch report", set()).action == "generate_report"
+
+
+# ─── Regressions fixed in 1.0.2 ─────────────────────────────────────────
+
+
+def test_validate_limit_wildcards_do_not_backtrack():
+    # A hand-built ".*" regex took minutes on this; fnmatch is linear enough.
+    import time
+
+    from app.tools.inventory_reader import validate_limit
+
+    start = time.perf_counter()
+    with pytest.raises(ValueError):
+        validate_limit("a*" * 60 + "b", {"a" * 40}, set())
+    with pytest.raises(ValueError):
+        validate_limit("*" * 150 + "z", {"ubuntu-web-01"}, set())
+    assert time.perf_counter() - start < 1
+
+
+@pytest.mark.parametrize(
+    "limit,expected",
+    [
+        # Same answers as `ansible all --limit <limit> --list-hosts`.
+        ("ga,&gb,gc", {"a2"}),
+        ("&gb,ga", {"a2"}),
+        ("ga,!a1,gc", {"a2", "c1"}),
+        ("!a1", {"a2", "b1", "c1"}),
+        ("&gb", {"a2", "b1"}),
+        ("g*,!gc", {"a1", "a2", "b1"}),
+    ],
+)
+def test_hosts_in_scope_follows_ansible_order(limit, expected):
+    from app.agents.nodes import hosts_in_scope
+    from app.agents.state import AgentState, HostInfo
+
+    hosts = [HostInfo(hostname=h, ip=h, os_group="ubuntu_servers") for h in ("a1", "a2", "b1", "c1")]
+    members = {"ga": ["a1", "a2"], "gb": ["a2", "b1"], "gc": ["c1"]}
+    state = AgentState(target_hosts=limit, all_hosts=hosts, group_members=members)
+    assert {h.hostname for h in hosts_in_scope(state)} == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "all:\n  children:\n    ubuntu_servers:\n      hosts:\n        - web01\n",  # hosts as a list
+        "all:\n  children:\n    ubuntu_servers:\n      hosts:\n        web01: {}\n      vars: nope\n",
+        "all:\n  children:\n    - ubuntu_servers\n",
+    ],
+)
+def test_malformed_inventory_is_empty_not_a_crash(env, text):
+    from app.tools.inventory_reader import InventoryReader
+
+    env["inventory"].write_text(text)
+    by_group, hosts, groups = InventoryReader().load_all()
+    assert by_group == {} and hosts == []
+
+
+@pytest.mark.parametrize("signature", ["v0=\xe9", "v0=" + "a" * 64, ""])
+def test_slack_signature_rejects_garbage_without_raising(signature):
+    import time
+
+    from app.security import verify_slack_signature
+
+    assert verify_slack_signature("secret", str(int(time.time())), b"x", signature) is False
+
+
+@pytest.mark.parametrize("header", ["HMAC \xe9", "HMAC ", "Bearer x"])
+def test_teams_hmac_rejects_garbage_without_raising(header):
+    from app.security import verify_teams_hmac
+
+    assert verify_teams_hmac("c2VjcmV0", b"x", header) is False

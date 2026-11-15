@@ -132,7 +132,9 @@ def verify_slack_signature(
         return False
     base = b"v0:" + timestamp.encode() + b":" + body
     expected = "v0=" + hmac.new(signing_secret.encode(), base, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str, and the
+    # signature header is whatever the client sent.
+    return _eq(expected, signature)
 
 
 def verify_teams_hmac(secret_b64: str, body: bytes, authorization: str) -> bool:
@@ -143,4 +145,4 @@ def verify_teams_hmac(secret_b64: str, body: bytes, authorization: str) -> bool:
     except (binascii.Error, ValueError):
         return False
     expected = base64.b64encode(hmac.new(key, body, hashlib.sha256).digest()).decode()
-    return hmac.compare_digest(expected, authorization[5:].strip())
+    return _eq(expected, authorization[5:].strip())
