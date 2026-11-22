@@ -1,0 +1,130 @@
+---
+# =============================================================================
+# docker_update.yml: pull new images for Docker Compose projects, restart what
+# changed and check that every container comes back
+# =============================================================================
+# Runs on the group docker_hosts. Each host lists its projects, i.e. the
+# directories that hold a compose file:
+#
+#   docker_hosts:
+#     hosts:
+#       photos-01:
+#         docker_compose_projects: [/root/immich]
+#
+#   ansible-playbook playbooks/docker_update.yml
+#   ansible-playbook playbooks/docker_update.yml --limit photos-01
+#   ansible-playbook playbooks/docker_update.yml -e docker_pull_only=true   # download only, no restart
+#   ansible-playbook playbooks/docker_update.yml --check                    # current state only
+#
+# "OK" means every container of the project is running and, if it has a
+# healthcheck, healthy, and still is docker_settle_seconds later without
+# having restarted. A project that doesn't get there within
+# docker_wait_retries x docker_wait_delay seconds is reported as FAILED and
+# left as it is (no rollback); the run goes on with the next project and the
+# host fails at the end. Dangling images are only pruned on hosts where every
+# project is OK, so the previous image is still there for a manual rollback.
+#
+# Optional host/group vars:
+#   docker_wait_retries: 20         docker_wait_delay: 15   (seconds)
+#   docker_settle_seconds: 20       second look after that (0 = skip)
+#   docker_ignore_services: []      services allowed to be stopped (one-shot jobs)
+#   docker_prune_dangling: true
+#   docker_service_name: docker     docker_manage_service: true
+# =============================================================================
+
+- name: "Update Docker Compose projects"
+  hosts: docker_hosts
+  become: true
+  gather_facts: false
+  serial: "{{ docker_serial | default('100%') }}"
+  vars:
+    # update: pull + up -d + check | pull: pull + check | status: check only (--check)
+    docker_mode: >-
+      {{ 'status' if ansible_check_mode
+         else ('pull' if (docker_pull_only | default(false) | bool) else 'update') }}
+  tasks:
+    # Snap installs call the unit snap.docker.dockerd: set docker_service_name.
+    - name: Make sure Docker is running and starts at boot
+      ansible.builtin.service:
+        name: "{{ docker_service_name | default('docker') }}"
+        state: started
+        enabled: true
+      when: docker_manage_service | default(true) | bool
+
+    - name: Check that the Compose v2 plugin is available
+      ansible.builtin.command: docker compose version --short
+      register: compose_version
+      changed_when: false
+      check_mode: false
+
+    - name: Start with an empty result list
+      ansible.builtin.set_fact:
+        docker_results: []
+
+    - name: Warn about hosts without projects
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} has no docker_compose_projects; nothing to do."
+      when: docker_compose_projects | default([]) | length == 0
+
+    - name: Update each project
+      ansible.builtin.include_tasks: tasks/docker_project.yml
+      loop: "{{ docker_compose_projects | default([]) }}"
+      loop_control:
+        loop_var: docker_project
+        label: "{{ docker_project }}"
+
+    - name: Remove dangling images (only when every project is OK)
+      ansible.builtin.command: docker image prune --force
+      register: docker_prune
+      changed_when: "'Total reclaimed space: 0B' not in docker_prune.stdout"
+      when:
+        - docker_mode == 'update'
+        - docker_prune_dangling | default(true) | bool
+        - docker_results | length > 0
+        - docker_results | selectattr('status', 'equalto', 'FAILED') | list | length == 0
+
+# ─── Reports ────────────────────────────────────────────────────────────────
+- name: "Write Docker reports"
+  hosts: docker_hosts
+  gather_facts: false
+  tasks:
+    - name: Create the report directory on the controller
+      ansible.builtin.file:
+        path: "{{ patch_report_dir }}/docker-runs"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      check_mode: false
+      vars: &controller_vars
+        ansible_become: false
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: patch_report_enabled | default(true) | bool
+
+    - name: Write the result of each host on the controller
+      ansible.builtin.copy:
+        content: "{{ docker_report | to_nice_json }}\n"
+        dest: "{{ patch_report_dir }}/docker-runs/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      check_mode: false
+      vars:
+        <<: *controller_vars
+        docker_report:
+          host: "{{ inventory_hostname }}"
+          mode: "{{ 'status' if ansible_check_mode else ('pull' if (docker_pull_only | default(false) | bool) else 'update') }}"
+          compose_version: "{{ compose_version.stdout | default('') }}"
+          timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          projects: "{{ docker_results }}"
+      when:
+        - patch_report_enabled | default(true) | bool
+        - docker_results is defined
+
+    - name: Fail the hosts with a project that is not OK
+      ansible.builtin.fail:
+        msg: >-
+          Not OK: {{ docker_results | selectattr('status', 'equalto', 'FAILED')
+                     | map(attribute='project') | join(', ') }}
+      when:
+        - docker_results is defined
+        - docker_results | selectattr('status', 'equalto', 'FAILED') | list | length > 0

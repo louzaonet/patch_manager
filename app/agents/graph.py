@@ -21,6 +21,10 @@ Agent graph: the LangGraph state machine.
                            ▼                                                               ▼
                           END ◄────────────────────────────────────────────────────────────┘
 
+package_query goes straight from classify_intent to query_packages and then
+END: the answer is built from the package data (app/agents/packages.py), with
+no LLM involved.
+
 Execution is deliberately NOT part of the graph: plans are approved through
 /api/plans/{id}/approve (or Slack), see app/services/plans.py.
 """
@@ -39,6 +43,7 @@ from app.agents.nodes import (
     load_inventory,
     score_risks,
 )
+from app.agents.packages import query_packages
 from app.agents.state import ActionType, AgentState
 
 
@@ -49,6 +54,8 @@ def _route_after_classify(state: AgentState) -> str:
         return "score_risks"
     if state.action == ActionType.STATUS:
         return "fetch_task_status"
+    if state.action == ActionType.PACKAGE_QUERY:
+        return "query_packages"
     return "handle_question"
 
 
@@ -67,13 +74,14 @@ def build_agent_graph() -> StateGraph:
     graph.add_node("fetch_task_status", fetch_task_status)
     graph.add_node("generate_briefing", generate_briefing)
     graph.add_node("handle_question", handle_question)
+    graph.add_node("query_packages", query_packages)
 
     graph.add_edge(START, "load_inventory")
     graph.add_edge("load_inventory", "classify_intent")
     graph.add_conditional_edges(
         "classify_intent",
         _route_after_classify,
-        ["enrich_cves", "score_risks", "fetch_task_status", "handle_question"],
+        ["enrich_cves", "score_risks", "fetch_task_status", "handle_question", "query_packages"],
     )
     graph.add_edge("enrich_cves", "score_risks")
     graph.add_conditional_edges(
@@ -83,6 +91,7 @@ def build_agent_graph() -> StateGraph:
     graph.add_edge("fetch_task_status", "generate_briefing")
     graph.add_edge("generate_briefing", END)
     graph.add_edge("handle_question", END)
+    graph.add_edge("query_packages", END)
     return graph
 
 

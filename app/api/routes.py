@@ -83,7 +83,7 @@ class ChatResponse(BaseModel):
 
 def _to_response(state: AgentState) -> ChatResponse:
     risk_summary = None
-    if state.all_hosts and state.action != ActionType.ASK_QUESTION:
+    if state.all_hosts and state.action not in (ActionType.ASK_QUESTION, ActionType.PACKAGE_QUERY):
         risk_summary = risk_rows(hosts_in_scope(state))
 
     plan_summary = None

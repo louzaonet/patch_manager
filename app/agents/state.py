@@ -21,6 +21,7 @@ class ActionType(StrEnum):
     GENERATE_REPORT = "generate_report"
     ASK_QUESTION = "ask_question"
     STATUS = "status"
+    PACKAGE_QUERY = "package_query"  # installed version of a package per host (read-only)
 
 
 OS_GROUPS: tuple[str, ...] = ("ubuntu_servers", "rocky_servers", "macos_servers", "windows_servers")
@@ -107,6 +108,9 @@ class AgentState:
     # The target that was asked for, when it failed validation and was dropped.
     rejected_target: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
+    # Package question: name or glob, and whether to run a live query.
+    package_name: str = ""
+    package_live: bool = False
 
     # ─── Inventory ──────────────────────────────────────────────────────
     inventory: dict[str, list[HostInfo]] = field(default_factory=dict)

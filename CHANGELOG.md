@@ -1,5 +1,19 @@
 # Registro de cambios
 
+## 1.0.4 (2026-11-22)
+
+### Novedades
+
+- Preguntas sobre paquetes: "¿qué versión de nginx tenemos instalada?", "is openssh-server installed on ubuntu_servers?". La IA responde con una tabla host, paquete y versión, construida a partir de los datos y no redactada por el modelo, además de los hosts donde no está instalado y los que no tienen datos. Por defecto usa el inventario de paquetes que ahora guarda Check Updates en Ubuntu y Rocky (`reports/packages/<host>.json`, desactivable con `patch_collect_packages: false`); si se pide "ahora" o "actualizado", lanza el playbook nuevo `package_query.yml` (plantilla **Package Query** en Semaphore), espera hasta `PACKAGE_QUERY_TIMEOUT` segundos (180) y responde con lo que contestaron los hosts. Es de solo lectura, como **Refresh host data**, y no pasa por la aprobación de planes. El nombre del paquete se valida en el servicio y otra vez en el playbook, y llega a los hosts como argumento, sin shell. Funciona también sin LLM (palabras clave en español e inglés) y admite `*` como comodín. macOS y Windows no se consultan.
+- `playbooks/docker_update.yml`: actualiza los proyectos de Docker Compose de los hosts del grupo `docker_hosts`. Cada host lista sus directorios en `docker_compose_projects`. Por cada proyecto hace `docker compose pull` y `up -d`, que solo recrea los contenedores cuya imagen cambió y arranca los que estuvieran parados, y espera hasta que todos los contenedores estén `running` y, si tienen healthcheck, `healthy` (por defecto 20 intentos de 15 s). Después vuelve a mirar a los 20 s y comprueba que ninguno se ha reiniciado entre medias, para no dar por bueno un contenedor sin healthcheck que se reinicia en bucle. Un proyecto que no llega a ese estado queda como `FAILED`, sin rollback; el playbook sigue con el siguiente proyecto y el host termina en rojo. Las imágenes huérfanas solo se borran en los hosts donde todo ha ido bien, para que la anterior siga disponible si hay que volver atrás a mano. Con `-e docker_pull_only=true` solo descarga, y con `--check` solo informa del estado. Deja un informe por host en `reports/docker-runs/<host>.json` con las imágenes actualizadas y el estado de cada contenedor.
+
+### Pruebas
+
+- Ejecutado contra un Docker 29 con Compose 5.7 local, con imágenes de prueba y un `docker compose pull` simulado: proyecto sin cambios, imagen nueva (el contenedor se recrea con ella y la antigua se borra), healthcheck que falla, contenedor parado, contenedor que se reinicia en bucle, directorio inexistente, directorio sin compose, `--check` y `docker_pull_only`. El formato JSON de Compose antiguo (un array) se ha probado aparte.
+- Consultas de paquetes, de extremo a extremo con un Semaphore 2.19.12 real y un Ubuntu 24.04 local: la IA lanza **Package Query**, el playbook escribe el resultado y la respuesta trae la versión real de nginx; un host inalcanzable sale como "no contestó". Con límite (`is nginx installed on <host> right now?`) y desde el inventario después de un Check Updates lanzado por el servicio. El inventario de paquetes del host de prueba (1.049 paquetes, 37 KB) coincide con `dpkg-query`. Un nombre con `;` o que empieza por `-` se rechaza en el playbook antes de tocar ningún host.
+- ansible-lint (perfil production), `--syntax-check` y 165 tests.
+- Sin probar: Docker contra un registro real, en hosts reales y con versiones de Compose anteriores a la 5; el inventario y las consultas de paquetes en Rocky (`rpm`).
+
 ## 1.0.3 (2026-11-22)
 
 ### Novedades

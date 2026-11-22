@@ -1,0 +1,214 @@
+---
+# One Docker Compose project. Included by docker_update.yml with docker_project
+# set to the project directory and docker_mode to update | pull | status.
+
+- name: "Update and check the project"
+  block:
+    # Registered vars outlive the loop iteration: clear the ones the result
+    # reads, so a failed project never reports the previous project's data.
+    - name: "Reset the per-project results: {{ docker_project }}"
+      ansible.builtin.set_fact:
+        images_before: {}
+        images_after: {}
+        compose_ps: {}
+
+    - name: "Look for the project directory: {{ docker_project }}"
+      ansible.builtin.stat:
+        path: "{{ docker_project }}"
+      register: project_dir
+
+    - name: "Stop here if the directory does not exist: {{ docker_project }}"
+      ansible.builtin.fail:
+        msg: "{{ docker_project }} does not exist or is not a directory on {{ inventory_hostname }}"
+      when: not (project_dir.stat.isdir | default(false))
+
+    # Also catches a broken compose file, or a directory without one.
+    - name: "Validate the compose file: {{ docker_project }}"
+      ansible.builtin.command: docker compose config --quiet
+      args:
+        chdir: "{{ docker_project }}"
+      changed_when: false
+      check_mode: false
+
+    # One line per image: "<reference> <image id>" ("none" if not present yet).
+    - name: "Record the images in use: {{ docker_project }}"
+      ansible.builtin.shell: &image_ids |
+        set -o pipefail
+        docker compose config --images | sort -u | while read -r ref; do
+          printf '%s %s\n' "$ref" "$(docker image inspect --format '{% raw %}{{.Id}}{% endraw %}' "$ref" 2>/dev/null || echo none)"
+        done
+      args:
+        chdir: "{{ docker_project }}"
+        executable: /bin/bash
+      register: images_before
+      changed_when: false
+      check_mode: false
+
+    - name: "Pull new images: {{ docker_project }}"
+      ansible.builtin.command: docker compose pull --quiet
+      args:
+        chdir: "{{ docker_project }}"
+      changed_when: false  # the next task compares image ids instead
+      when: docker_mode in ['update', 'pull']
+
+    - name: "Record the images after the pull: {{ docker_project }}"
+      ansible.builtin.shell: *image_ids
+      args:
+        chdir: "{{ docker_project }}"
+        executable: /bin/bash
+      register: images_after
+      changed_when: updated_images | length > 0
+      check_mode: false
+      when: docker_mode in ['update', 'pull']
+      vars: &image_vars
+        before_ids: "{{ dict(images_before.stdout_lines | default([]) | map('split') | list) }}"
+        after_ids: >-
+          {{ dict(images_after.stdout_lines | map('split') | list)
+             if images_after.stdout_lines is defined else before_ids }}
+        updated_images: >-
+          {%- set out = [] -%}
+          {%- for ref, image_id in after_ids.items() if before_ids.get(ref) != image_id -%}
+          {%- set _ = out.append(ref) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    # up -d recreates the containers whose image changed and starts any that
+    # were stopped; the rest keep running untouched.
+    - name: "Start the project: {{ docker_project }}"
+      ansible.builtin.command: docker compose up --detach
+      args:
+        chdir: "{{ docker_project }}"
+      register: compose_up
+      # No \b here: Jinja turns "\b" into a backspace and the search never matched.
+      changed_when: compose_up.stderr is search('Recreated|Created|Started')
+      when: docker_mode == 'update'
+
+    - name: "Wait until every container is running and healthy: {{ docker_project }}"
+      ansible.builtin.command: docker compose ps --all --format json
+      args:
+        chdir: "{{ docker_project }}"
+      register: compose_ps
+      changed_when: false
+      check_mode: false
+      # Judged by the next task; this one only waits.
+      failed_when: false
+      retries: "{{ 1 if docker_mode == 'status' else (docker_wait_retries | default(20)) }}"
+      delay: "{{ docker_wait_delay | default(15) }}"
+      until: compose_ps.rc == 0 and containers | length > 0 and not_ok | length == 0
+      vars: &ps_vars
+        # Older Compose prints a JSON array, newer releases one object per line.
+        containers: >-
+          {{ [] if compose_ps.stdout is not defined
+             else (compose_ps.stdout | trim | from_json) if (compose_ps.stdout | trim).startswith('[')
+             else (compose_ps.stdout_lines | select | map('from_json') | list) }}
+        checked: "{{ containers | rejectattr('Service', 'in', docker_ignore_services | default([])) | list }}"
+        not_ok: >-
+          {{ ((checked | rejectattr('State', 'equalto', 'running') | list)
+              + (checked | selectattr('Health', 'defined') | rejectattr('Health', 'in', ['', 'healthy']) | list))
+             | map(attribute='Name') | unique | list }}
+        # "name state [health]" per container, for the report.
+        states: >-
+          {%- set out = [] -%}
+          {%- for c in containers -%}
+          {%- set _ = out.append((c.Name ~ ' ' ~ c.State ~ ' ' ~ (c.Health | default(''))) | trim) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Stop here if a container is not OK: {{ docker_project }}"
+      ansible.builtin.fail:
+        msg: >-
+          {{ 'docker compose ps failed: ' ~ compose_ps.stderr if compose_ps.rc != 0
+             else 'no containers' if containers | length == 0
+             else 'not running or not healthy' ~ ('' if docker_mode == 'status' else ' after the wait') ~ ': '
+                  ~ (not_ok | join(', ')) }}
+      vars: *ps_vars
+      when: compose_ps.rc != 0 or containers | length == 0 or not_ok | length > 0
+
+    # A container without a healthcheck that crashes and restarts in a loop
+    # can be "running" at the moment of the check. Look again after a while:
+    # still running and healthy, and not restarted in between.
+    - name: "Make sure the containers stay up: {{ docker_project }}"
+      when:
+        - docker_mode == 'update'  # pull-only and status runs leave the containers alone
+        - docker_settle_seconds | default(20) | int > 0
+      block:
+        - name: "Record restart counts: {{ docker_project }}"
+          ansible.builtin.shell: &restart_counts |
+            set -o pipefail
+            docker compose ps --all --quiet \
+              | xargs --no-run-if-empty docker inspect --format '{% raw %}{{.Name}} {{.RestartCount}}{% endraw %}'
+          args:
+            chdir: "{{ docker_project }}"
+            executable: /bin/bash
+          register: restarts_before
+          changed_when: false
+
+        - name: "Let the containers run for a while: {{ docker_project }}"
+          ansible.builtin.wait_for:
+            timeout: "{{ docker_settle_seconds | default(20) | int }}"
+
+        # Registered under another name: a skipped task with "register" would
+        # overwrite compose_ps in pull and status runs and empty the report.
+        - name: "Check the containers again: {{ docker_project }}"
+          ansible.builtin.command: docker compose ps --all --format json
+          args:
+            chdir: "{{ docker_project }}"
+          register: compose_ps_again
+          changed_when: false
+
+        - name: "Use the second look from here on: {{ docker_project }}"
+          ansible.builtin.set_fact:
+            compose_ps: "{{ compose_ps_again }}"
+
+        - name: "Record restart counts again: {{ docker_project }}"
+          ansible.builtin.shell: *restart_counts
+          args:
+            chdir: "{{ docker_project }}"
+            executable: /bin/bash
+          register: restarts_after
+          changed_when: false
+
+        - name: "Stop here if a container restarted or stopped: {{ docker_project }}"
+          ansible.builtin.fail:
+            msg: >-
+              {{ ('restarted during the check: ' ~ (restarted | join(', ')) ~ '. ') if restarted else '' }}{{
+                 ('not running or not healthy: ' ~ (not_ok | join(', '))) if not_ok else '' }}
+          vars:
+            <<: *ps_vars
+            counts_before: "{{ dict(restarts_before.stdout_lines | map('split') | list) }}"
+            counts_after: "{{ dict(restarts_after.stdout_lines | map('split') | list) }}"
+            restarted: >-
+              {%- set out = [] -%}
+              {%- for name, count in counts_before.items()
+                  if (counts_after.get(name, '-1') | int) != (count | int) -%}
+              {%- set _ = out.append(name | regex_replace('^/', '')) -%}
+              {%- endfor -%}
+              {{ out }}
+          when: restarted | length > 0 or not_ok | length > 0
+
+    - name: "Record the result: {{ docker_project }}"
+      ansible.builtin.set_fact:
+        docker_results: "{{ docker_results + [project_result] }}"
+      vars:
+        <<: [*ps_vars, *image_vars]
+        project_result:
+          project: "{{ docker_project }}"
+          status: "{{ 'PULLED' if docker_mode == 'pull' else 'OK' }}"
+          updated_images: "{{ updated_images }}"
+          containers: "{{ states }}"
+
+  rescue:
+    - name: "Record the failure: {{ docker_project }}"
+      ansible.builtin.set_fact:
+        docker_results: "{{ docker_results + [project_result] }}"
+      vars:
+        <<: [*ps_vars, *image_vars]
+        project_result:
+          project: "{{ docker_project }}"
+          status: FAILED
+          error: >-
+            {{ ansible_failed_task.name | default('task') }}:
+            {{ (ansible_failed_result.msg | default('failed')) | string | truncate(400) }}
+            {{ (ansible_failed_result.stderr | default('')) | string | truncate(400) }}
+          updated_images: "{{ updated_images }}"
+          containers: "{{ states }}"

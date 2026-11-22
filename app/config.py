@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     semaphore_project_id: int | None = Field(default=None, alias="SEMAPHORE_PROJECT_ID")
     semaphore_template_apply: str = Field(default="Apply Patches", alias="SEMAPHORE_TEMPLATE_APPLY")
     semaphore_template_check: str = Field(default="Check Updates", alias="SEMAPHORE_TEMPLATE_CHECK")
+    # Live package queries ("which version of nginx do we have, right now?").
+    semaphore_template_packages: str = Field(default="Package Query", alias="SEMAPHORE_TEMPLATE_PACKAGES")
+    # How long a live query may take before the answer falls back to the inventory.
+    package_query_timeout: float = Field(default=180.0, alias="PACKAGE_QUERY_TIMEOUT")
     semaphore_timeout: float = Field(default=30.0, alias="SEMAPHORE_TIMEOUT")
 
     # ─── Inventory and host reports ─────────────────────────────────────

@@ -1,0 +1,122 @@
+---
+# =============================================================================
+# package_query.yml: installed version of a package on each host (read-only)
+# =============================================================================
+# The AI service starts it (template "Package Query") when someone asks for
+# live data. It can also be run by hand:
+#
+#   ansible-playbook playbooks/package_query.yml -e package_query=nginx -e package_query_id=manual01
+#   ansible-playbook playbooks/package_query.yml -e 'package_query=openssl*' -e package_query_id=manual02 --limit web
+#
+# package_query: a package name, "*" allowed as a wildcard. It is checked
+# against a strict pattern before anything runs and reaches the hosts only as
+# a separate argument (no shell). Results go to
+# {{ patch_report_dir }}/package-queries/<package_query_id>/<host>.json;
+# query directories older than a day are removed at the start of each run.
+#
+# Ubuntu (dpkg-query) and Rocky Linux (rpm). macOS and Windows have no
+# comparable package database and are not queried.
+# =============================================================================
+
+- name: "Check the query and clean up old results"
+  hosts: ubuntu_servers:rocky_servers
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse anything that is not a plain package name or id
+      ansible.builtin.assert:
+        that:
+          - package_query is defined
+          - package_query is match('^[A-Za-z0-9][A-Za-z0-9+._*-]{0,99}$')
+          - package_query_id is defined
+          - package_query_id is match('^[A-Za-z0-9_-]{4,40}$')
+        fail_msg: "package_query must be a package name (letters, digits, + . _ - *); package_query_id 4-40 characters [A-Za-z0-9_-]"
+        quiet: true
+      run_once: true
+      delegate_to: localhost
+
+    - name: Find query results older than a day
+      ansible.builtin.find:
+        paths: "{{ patch_report_dir }}/package-queries"
+        file_type: directory
+        age: 1d
+      register: old_queries
+      run_once: true
+      delegate_to: localhost
+      check_mode: false
+      vars: &controller_vars
+        ansible_become: false
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: Remove them
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_queries.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      run_once: true
+      delegate_to: localhost
+      vars: *controller_vars
+
+# dpkg-query exits 1 when no package matches; that is an answer, not an error.
+- name: "Query packages: Ubuntu"
+  hosts: ubuntu_servers
+  gather_facts: false
+  check_mode: false
+  tasks:
+    - name: Look the package up
+      ansible.builtin.command:
+        argv: [dpkg-query, --show, '--showformat=${db:Status-Abbrev}\t${Package}\t${Version}\n', --, "{{ package_query }}"]
+      register: package_lines
+      changed_when: false
+      failed_when: package_lines.rc not in [0, 1]
+
+- name: "Query packages: Rocky Linux"
+  hosts: rocky_servers
+  gather_facts: false
+  check_mode: false
+  tasks:
+    - name: Look the package up
+      ansible.builtin.command:
+        argv: [rpm, -qa, --queryformat, 'ii\t%{NAME}\t%{VERSION}-%{RELEASE}\n', "{{ package_query }}"]
+      register: package_lines
+      changed_when: false
+
+- name: "Write the query results"
+  hosts: ubuntu_servers:rocky_servers
+  gather_facts: false
+  check_mode: false
+  tasks:
+    - name: Create the result directory on the controller
+      ansible.builtin.file:
+        path: "{{ patch_report_dir }}/package-queries/{{ package_query_id }}"
+        state: directory
+        mode: "0755"
+      run_once: true
+      delegate_to: localhost
+      vars: *controller_vars
+
+    # Only installed packages (state "ii"); one entry per name and version.
+    - name: Write the result of each host
+      ansible.builtin.copy:
+        content: "{{ query_result | to_nice_json }}\n"
+        dest: "{{ patch_report_dir }}/package-queries/{{ package_query_id }}/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      vars:
+        <<: *controller_vars
+        query_result:
+          host: "{{ inventory_hostname }}"
+          query: "{{ package_query }}"
+          checked_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          matches: >-
+            {%- set out = [] -%}
+            {%- for line in package_lines.stdout_lines | default([]) | select('match', '^ii\s') -%}
+            {%- set f = line.split('\t') -%}
+            {%- if f | length >= 3 and f[1] and f[2] -%}
+            {%- set _ = out.append({'name': f[1], 'version': f[2]}) -%}
+            {%- endif -%}
+            {%- endfor -%}
+            {{ out | unique | list }}
+      when: package_lines is defined

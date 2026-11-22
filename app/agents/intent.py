@@ -16,8 +16,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError, field_validator
 
 ActionName = Literal[
-    "analyze_risk", "check_updates", "apply_patches", "generate_report", "status", "ask_question"
+    "analyze_risk", "check_updates", "apply_patches", "generate_report", "status", "ask_question",
+    "package_query",
 ]
+
+# A package name or a glob. The same pattern is enforced again by
+# package_query.yml before the name reaches a host.
+PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._*-]{0,99}$")
 
 
 class Intent(BaseModel):
@@ -26,6 +31,17 @@ class Intent(BaseModel):
     security_only: bool = False
     dry_run: bool = False
     no_reboot: bool = False
+    package: str | None = None
+    live: bool = False
+
+    @field_validator("package", mode="before")
+    @classmethod
+    def _valid_package(cls, value: Any) -> Any:
+        """Anything that is not a plain package name is dropped, not passed on."""
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value if PACKAGE_RE.match(value) else None
 
     @field_validator("target_hosts", mode="before")
     @classmethod
@@ -50,6 +66,7 @@ Pick exactly one action:
 - apply_patches: install updates (the system will build a plan for human approval)
 - generate_report: summary or report of current state
 - status: status of running or recent patch jobs
+- package_query: which version of a package is installed on the hosts, or whether it is installed
 - ask_question: anything else (how-to, explanations)
 
 Known inventory groups and hosts: {known}
@@ -57,10 +74,14 @@ Known inventory groups and hosts: {known}
 Also extract:
 - target_hosts: a group or hostname from the list above, or null for all hosts
 - security_only, dry_run, no_reboot: true only if the user asks for it
+- package: for package_query, the package name as the OS names it (e.g. "nginx", "openssl",
+  "openssh-server"); "*" is allowed as a wildcard. null otherwise
+- live: true only if the user wants current data checked on the hosts now ("right now",
+  "live", "ahora", "actualizado"), otherwise false
 
 Reply with one JSON object and nothing else, for example:
 {{"action": "check_updates", "target_hosts": null,
- "security_only": false, "dry_run": false, "no_reboot": false}}
+ "security_only": false, "dry_run": false, "no_reboot": false, "package": null, "live": false}}
 
 User request:
 <<<
@@ -126,6 +147,39 @@ def parse_intent(text: str) -> Intent | None:
 # First match wins. Explicit action verbs come first; read-only questions
 # ("list pending patches", "which hosts have updates available") come before
 # the bare word "patch", which alone used to turn a question into a plan.
+# "which version of nginx", "qué versión de nginx tenemos", "is curl installed"
+_PACKAGE_PATTERNS = [
+    re.compile(r"\bversi(?:on|ón|ones|ons)\s+(?:of|de|del)\s+(?:the\s+|el\s+|la\s+|los\s+)?"
+               r"(?:package\s+|paquete\s+)?([A-Za-z0-9][A-Za-z0-9+._*-]*)"),
+    re.compile(r"\b(?:is|está|esta)\s+([A-Za-z0-9][A-Za-z0-9+._*-]*)\s+(?:installed|instalad[oa])"),
+    re.compile(r"\b(?:which|what|qué|que)\s+hosts?\s+(?:have|has|tienen?)\s+([A-Za-z0-9][A-Za-z0-9+._*-]*)"
+               r"\s+(?:installed|instalad[oa])"),
+]
+# "nginx version": the word before "version", unless it is a filler word.
+_NAME_BEFORE_VERSION = re.compile(r"\b([A-Za-z0-9][A-Za-z0-9+._-]*)\s+(?:version|versión)\b")
+_NOT_PACKAGES = {"what", "which", "the", "latest", "current", "new", "this", "that", "que", "qué",
+                 "la", "el", "una", "a", "os", "same", "misma", "nueva", "última", "ultima"}
+_LIVE_RE = re.compile(r"\b(right now|now|live|current(?:ly)?|fresh|ahora|actualizad[oa]s?|en vivo|"
+                      r"en este momento|al momento)\b")
+
+
+def package_from_text(message: str) -> str | None:
+    """Package name asked about in plain text, if any."""
+    for pattern in _PACKAGE_PATTERNS:
+        m = pattern.search(message)
+        if m and PACKAGE_RE.match(m.group(1)):
+            return m.group(1).rstrip(".")
+    m = _NAME_BEFORE_VERSION.search(message)
+    if m and m.group(1).lower() not in _NOT_PACKAGES and PACKAGE_RE.match(m.group(1)):
+        return m.group(1)
+    return None
+
+
+def wants_live(message: str) -> bool:
+    """The user asks for data checked on the hosts now, not the last inventory."""
+    return bool(_LIVE_RE.search(message.lower()))
+
+
 _KEYWORDS: list[tuple[str, str]] = [
     (r"\b(status|progress|running|last (run|job|task))\b", "status"),
     (r"\b(apply|install|upgrade|deploy)\b|\bplan\b.*\b(patch|update)", "apply_patches"),
@@ -142,10 +196,14 @@ def keyword_intent(message: str, known_names: set[str]) -> Intent:
     """Deterministic fallback used when the LLM is unavailable."""
     low = message.lower()
     action = "ask_question"
-    for pattern, name in _KEYWORDS:
-        if re.search(pattern, low):
-            action = name
-            break
+    package = package_from_text(low)
+    if package:
+        action = "package_query"
+    else:
+        for pattern, name in _KEYWORDS:
+            if re.search(pattern, low):
+                action = name
+                break
     target = next(
         (n for n in sorted(known_names, key=len, reverse=True)
          if re.search(rf"(?<![\w-]){re.escape(n.lower())}(?![\w-])", low)),
@@ -157,4 +215,6 @@ def keyword_intent(message: str, known_names: set[str]) -> Intent:
         security_only=bool(re.search(r"security[ -]only|only security|security patches", low)),
         dry_run=bool(re.search(r"dry[ -]?run|simulat", low)),
         no_reboot=bool(re.search(r"no[ -]reboot|without reboot|don'?t reboot|prevent reboot", low)),
+        package=package,
+        live=bool(package) and wants_live(low),
     )

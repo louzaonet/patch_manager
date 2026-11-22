@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import email
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -479,3 +480,37 @@ def test_patch_reboot_blocked_not_in_group_vars_all():
     # Defined there, it would beat group vars written in hosts.yml.
     data = yaml.safe_load((REPO / "inventory" / "group_vars" / "all.yml").read_text())
     assert "patch_reboot_blocked" not in data
+
+
+# ─── 1.0.4: docker_update.yml (static checks; the real runs are in CHANGELOG) ──
+
+
+def test_docker_update_structure():
+    plays = _plays("docker_update.yml")
+    assert [p["hosts"] for p in plays] == ["docker_hosts", "docker_hosts"]
+    tasks = {t["name"]: t for t in plays[0]["tasks"]}
+    prune = tasks["Remove dangling images (only when every project is OK)"]
+    assert any("FAILED" in cond for cond in prune["when"])  # keep old images when something failed
+    project = yaml.safe_load((REPO / "playbooks" / "tasks" / "docker_project.yml").read_text())[0]
+    assert project["rescue"], "a failed project must be recorded, not stop the host"
+    names = [t["name"] for t in project["block"]]
+    # No rollback: nothing after the failure check touches the containers.
+    assert not any("down" in str(t.get("ansible.builtin.command", "")) for t in project["block"])
+    assert names.index("Start the project: {{ docker_project }}") < names.index(
+        "Wait until every container is running and healthy: {{ docker_project }}")
+
+
+def test_docker_update_second_look():
+    project = yaml.safe_load((REPO / "playbooks" / "tasks" / "docker_project.yml").read_text())[0]
+    settle = next(t for t in project["block"] if t["name"].startswith("Make sure the containers stay up"))
+    assert "docker_mode == 'update'" in settle["when"][0]
+    names = [t["name"] for t in settle["block"]]
+    assert any("restart counts again" in n for n in names)
+
+
+def test_no_backslash_b_in_jinja_strings():
+    # Jinja turns '\b' into a backspace inside a string, so a regex with \b never matches.
+    for path in (REPO / "playbooks").rglob("*.yml"):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if "{{" in line or "search(" in line or "match(" in line:
+                assert not re.search(r"'[^']*\\b[^']*'", line), f"{path.name}:{n}"

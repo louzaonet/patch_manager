@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.4 (2026-11-22)
+
+### New
+
+- Package questions: "which version of nginx is installed?", "¿está openssh-server instalado en ubuntu_servers?". The AI answers with a host, package and version table built from the data, not written by the model, plus the hosts without the package and those without data. By default it uses the package inventory that Check Updates now keeps for Ubuntu and Rocky hosts (`reports/packages/<host>.json`, turned off with `patch_collect_packages: false`); when asked for data "right now" or "live", it starts the new `package_query.yml` playbook (**Package Query** template in Semaphore), waits up to `PACKAGE_QUERY_TIMEOUT` seconds (180) and answers with what the hosts returned. It only reads, like **Refresh host data**, and does not go through plan approval. The package name is validated by the service and again by the playbook, and reaches the hosts as an argument, with no shell. It also works without an LLM (Spanish and English keywords) and accepts `*` as a wildcard. macOS and Windows are not queried.
+- `playbooks/docker_update.yml`: updates the Docker Compose projects of the hosts in `docker_hosts`. Each host lists its directories in `docker_compose_projects`. For every project it runs `docker compose pull` and `up -d`, which only recreates containers whose image changed and starts any that were stopped, then waits until every container is `running` and, if it has a healthcheck, `healthy` (20 tries of 15 s by default). It then looks again 20 s later and checks that none restarted in between, so a container without a healthcheck that restarts in a loop isn't taken as fine. A project that doesn't get there is recorded as `FAILED`, with no rollback; the playbook moves on to the next project and the host ends red. Dangling images are only pruned on hosts where everything went well, so the previous image is still there for a manual rollback. `-e docker_pull_only=true` only downloads, and `--check` only reports the state. Writes one report per host to `reports/docker-runs/<host>.json` with the updated images and the state of each container.
+
+### Tested
+
+- Run against a local Docker 29 with Compose 5.7, test images and a simulated `docker compose pull`: unchanged project, new image (the container is recreated with it and the old one is pruned), failing healthcheck, stopped container, container restarting in a loop, missing directory, directory without a compose file, `--check` and `docker_pull_only`. The older Compose JSON format (an array) was tested separately.
+- Package questions, end to end with a real Semaphore 2.19.12 and a local Ubuntu 24.04: the AI starts **Package Query**, the playbook writes the result and the answer carries the real nginx version; an unreachable host shows as "did not answer". With a limit (`is nginx installed on <host> right now?`) and from the inventory after a Check Updates started by the service. The test host's package inventory (1,049 packages, 37 KB) matches `dpkg-query`. A name with `;` or starting with `-` is refused by the playbook before any host is touched.
+- ansible-lint (production profile), `--syntax-check` and 165 tests.
+- Not tested: Docker against a real registry, on real hosts and with Compose releases older than 5; the package inventory and queries on Rocky (`rpm`).
+
 ## 1.0.3 (2026-11-22)
 
 ### New

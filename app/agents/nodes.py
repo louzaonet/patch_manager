@@ -12,7 +12,14 @@ from typing import Any
 
 import structlog
 
-from app.agents.intent import INTENT_PROMPT, Intent, keyword_intent, parse_intent
+from app.agents.intent import (
+    INTENT_PROMPT,
+    Intent,
+    keyword_intent,
+    package_from_text,
+    parse_intent,
+    wants_live,
+)
 from app.agents.state import ActionType, AgentState, HostInfo, PatchPhase, PatchPlan
 from app.services.plans import plan_store
 from app.tools.cve_scanner import CVEScanner
@@ -160,12 +167,20 @@ async def classify_intent(state: AgentState) -> dict[str, Any]:
         "no_reboot": bool(opts.get("no_reboot") or intent.no_reboot),
     }
     action = ActionType(intent.action)
-    logger.info("intent_classified", action=action.value, target=target, **options)
+    package = ""
+    live = False
+    if action == ActionType.PACKAGE_QUERY:
+        package = intent.package or package_from_text(state.user_message.lower()) or ""
+        live = intent.live or wants_live(state.user_message)
+    logger.info("intent_classified", action=action.value, target=target, package=package or None,
+                live=live, **options)
     return {
         "action": action,
         "target_hosts": target,
         "rejected_target": rejected,
         "options": options,
+        "package_name": package,
+        "package_live": live,
         "warnings": warnings,
     }
 
