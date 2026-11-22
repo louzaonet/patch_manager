@@ -54,12 +54,21 @@ class PendingPlan:
         return asdict(self)
 
     def extra_vars(self) -> dict[str, str]:
-        """Ansible extra vars passed to the Apply Patches template."""
-        return {
+        """Ansible extra vars passed to the Apply Patches template.
+
+        patch_reboot_allowed is only sent to forbid reboots. Extra vars beat
+        every inventory value, so sending "true" would override the
+        inventory's own policy (patch_reboot_allowed: false in
+        group_vars/<group>.yml). The per-host veto patch_reboot_blocked is
+        honoured by the playbook either way.
+        """
+        extra = {
             "patch_security_only": str(self.security_only).lower(),
             "patch_dry_run": str(self.dry_run).lower(),
-            "patch_reboot_allowed": str(not self.no_reboot).lower(),
         }
+        if self.no_reboot:
+            extra["patch_reboot_allowed"] = "false"
+        return extra
 
 
 class PlanNotFound(KeyError):

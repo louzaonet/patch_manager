@@ -9,7 +9,7 @@ Detección de actualizaciones, parcheo e informes para Ubuntu, Rocky Linux, macO
 | Automatización | Playbooks de Ansible | detectar, instalar, reiniciar, informes JSON por host, correo |
 | Gestión web | Semaphore UI | lanzar y programar playbooks, almacén de claves, API |
 | IA | LangGraph + FastAPI (`/ai/`) | enriquecimiento con KEV/NVD, puntuación de riesgo, resúmenes, chat, planes de parcheo con aprobación |
-| Notificaciones | Correo, Slack, Teams | informes HTML, comando `/patch`, tarjetas de Workflows |
+| Notificaciones | Correo, Slack, Teams | informes HTML de los playbooks, análisis de riesgo programado de la IA, comando `/patch`, tarjetas de Workflows |
 
 ```
   Panel / Slack / Teams ──► servicio de IA ──► LLM (llama-swap u OpenRouter)

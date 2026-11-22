@@ -19,12 +19,27 @@ Write-Host "[1/6] Enabling WinRM service..." -ForegroundColor Yellow
 Enable-PSRemoting -Force -SkipNetworkProfileCheck
 
 # 2. Configure HTTPS listener with self-signed certificate
-Write-Host "[2/6] Creating self-signed certificate for HTTPS..." -ForegroundColor Yellow
+# Certificates made by this script carry a FriendlyName, so a re-run reuses a
+# valid one instead of adding a new certificate to the store every time, and
+# removes the ones it made earlier that are no longer in use (step 2b).
+Write-Host "[2/6] Preparing the HTTPS certificate..." -ForegroundColor Yellow
 $hostname = $env:COMPUTERNAME
-$cert = New-SelfSignedCertificate `
-    -DnsName $hostname `
-    -CertStoreLocation "Cert:\LocalMachine\My" `
-    -NotAfter (Get-Date).AddYears(5)
+$certStore = "Cert:\LocalMachine\My"
+$certName = "Ansible WinRM (patch-manager)"
+$cert = Get-ChildItem $certStore |
+    Where-Object { $_.FriendlyName -eq $certName -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date).AddDays(30) } |
+    Sort-Object NotAfter -Descending |
+    Select-Object -First 1
+if ($cert) {
+    Write-Host "    Reusing certificate $($cert.Thumbprint) (valid until $($cert.NotAfter))"
+} else {
+    $cert = New-SelfSignedCertificate `
+        -DnsName $hostname `
+        -CertStoreLocation $certStore `
+        -FriendlyName $certName `
+        -NotAfter (Get-Date).AddYears(5)
+    Write-Host "    Created certificate $($cert.Thumbprint)"
+}
 
 # Remove existing HTTPS listener if present
 $existingListener = Get-ChildItem WSMan:\localhost\Listener | Where-Object {
@@ -40,6 +55,24 @@ New-Item -Path WSMan:\localhost\Listener `
     -Address * `
     -CertificateThumbPrint $cert.Thumbprint `
     -Force
+
+# 2b. Remove the certificates this script made on earlier runs (not the one in use).
+Get-ChildItem $certStore |
+    Where-Object { $_.FriendlyName -eq $certName -and $_.Thumbprint -ne $cert.Thumbprint } |
+    ForEach-Object {
+        Write-Host "    Removing old certificate $($_.Thumbprint)"
+        Remove-Item -Path $_.PSPath
+    }
+
+# Versions before 1.0.3 did not set the FriendlyName. Their certificates are
+# listed, not deleted: another service could be using a certificate for this
+# host name.
+$legacy = Get-ChildItem $certStore |
+    Where-Object { $_.FriendlyName -eq "" -and $_.Subject -eq "CN=$hostname" -and $_.Issuer -eq $_.Subject -and $_.Thumbprint -ne $cert.Thumbprint }
+if ($legacy) {
+    Write-Host "    Self-signed CN=$hostname certificates possibly left by older runs:" -ForegroundColor Yellow
+    $legacy | ForEach-Object { Write-Host "      Remove-Item $certStore\$($_.Thumbprint)   # expires $($_.NotAfter)" }
+}
 
 # 3. Configure authentication
 Write-Host "[3/6] Configuring authentication..." -ForegroundColor Yellow

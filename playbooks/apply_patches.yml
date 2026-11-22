@@ -10,6 +10,10 @@
 #   -e patch_dry_run=true          detect only, install nothing
 #   -e patch_reboot_allowed=false  never reboot
 #   -e patch_security_only=true    security updates only (same as --tags security_only)
+#
+# --check (Semaphore's "Dry Run" box) counts as patch_dry_run=true.
+# Hosts with patch_reboot_blocked: true in the inventory never reboot, whatever
+# patch_reboot_allowed says (LXD hosts, the host that runs Semaphore).
 # =============================================================================
 
 # ─── Maintenance window ─────────────────────────────────────────────────────
@@ -47,6 +51,18 @@
   become: true
   gather_facts: true
   serial: "{{ patch_serial | default('100%') }}"
+  vars: &patch_switches
+    # Effective switches; set patch_dry_run / patch_reboot_* instead of these.
+    # In check mode the install tasks would only *report* changes and the run
+    # would leave no record, so --check is treated as a dry run.
+    patch_do_dry_run: "{{ (patch_dry_run | bool) or ansible_check_mode }}"
+    # patch_reboot_blocked is a per-host veto kept in the inventory. It is not
+    # defined in group_vars/all.yml, so a group var in hosts.yml works, and a
+    # plan or a run-level patch_reboot_allowed=true can't override it.
+    patch_do_reboot: >-
+      {{ (patch_reboot_allowed | bool)
+         and not (patch_reboot_blocked | default(false) | bool)
+         and not (patch_do_dry_run | bool) }}
   tasks:
     # A failure is recorded (rescue) so the host shows up as FAILED in the
     # report and the email; the last play then fails the host for real.
@@ -62,7 +78,7 @@
             name: "{{ item }}"
             selection: hold
           loop: "{{ patch_excluded_packages | default([]) }}"
-          when: not (patch_dry_run | bool)
+          when: not (patch_do_dry_run | bool)
           tags: [always]
 
         - name: List upgradable packages before patching
@@ -71,6 +87,8 @@
             LC_ALL: C
           register: pre_patch_list
           changed_when: false
+          # Read-only: also runs under --check, so a dry run lists what it would install.
+          check_mode: false
           tags: [always]
 
         - name: Select the packages to upgrade
@@ -89,7 +107,7 @@
           environment:
             DEBIAN_FRONTEND: noninteractive
           when:
-            - not (patch_dry_run | bool)
+            - not (patch_do_dry_run | bool)
             - not (patch_security_only | bool)
           tags: [full_update, security_only]
 
@@ -103,7 +121,7 @@
           environment:
             DEBIAN_FRONTEND: noninteractive
           when:
-            - not (patch_dry_run | bool)
+            - not (patch_do_dry_run | bool)
             - patch_security_only | bool
             - security_pkgs | length > 0
           tags: [full_update, security_only]
@@ -121,8 +139,7 @@
           register: reboot_result
           when:
             - reboot_flag.stat.exists
-            - patch_reboot_allowed | bool
-            - not (patch_dry_run | bool)
+            - patch_do_reboot | bool
           tags: [always]
 
         - name: Record the result
@@ -133,7 +150,7 @@
               updates_before: "{{ (security_pkgs if (patch_security_only | bool) else upgradable_lines) | list }}"
               updates_count: "{{ (security_pkgs if (patch_security_only | bool) else upgradable_lines) | length }}"
               mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
-              status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
+              status: "{{ 'DRY-RUN' if (patch_do_dry_run | bool) else 'APPLIED' }}"
               reboot_needed: "{{ reboot_flag.stat.exists and not (reboot_result is changed) }}"
               timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
           tags: [always]
@@ -160,6 +177,7 @@
   become: true
   gather_facts: true
   serial: "{{ patch_serial | default('100%') }}"
+  vars: *patch_switches
   tasks:
     # A failure is recorded (rescue) so the host shows up as FAILED in the
     # report and the email; the last play then fails the host for real.
@@ -170,6 +188,8 @@
           register: pre_patch_list
           changed_when: false
           failed_when: pre_patch_list.rc not in [0, 100]
+          # Read-only: also runs under --check, so a dry run lists what it would install.
+          check_mode: false
           tags: [always]
 
         - name: Install all updates
@@ -178,7 +198,7 @@
             state: latest
             exclude: "{{ patch_excluded_packages | default([]) }}"
           when:
-            - not (patch_dry_run | bool)
+            - not (patch_do_dry_run | bool)
             - not (patch_security_only | bool)
           tags: [full_update, security_only]
 
@@ -189,7 +209,7 @@
             security: true
             exclude: "{{ patch_excluded_packages | default([]) }}"
           when:
-            - not (patch_dry_run | bool)
+            - not (patch_do_dry_run | bool)
             - patch_security_only | bool
           tags: [full_update, security_only]
 
@@ -198,7 +218,7 @@
           changed_when: false
           when:
             - patch_autoclean | default(true) | bool
-            - not (patch_dry_run | bool)
+            - not (patch_do_dry_run | bool)
           tags: [always]
 
         # rc 1 means "reboot needed", but dnf also exits 1 on any error
@@ -211,6 +231,7 @@
           register: needs_restarting
           changed_when: false
           failed_when: false
+          check_mode: false
           tags: [always]
 
         - name: Reboot
@@ -220,8 +241,7 @@
           register: reboot_result
           when:
             - needs_restarting.rc == 1 and 'Reboot is required' in needs_restarting.stdout
-            - patch_reboot_allowed | bool
-            - not (patch_dry_run | bool)
+            - patch_do_reboot | bool
           tags: [always]
 
         - name: Record the result
@@ -232,7 +252,7 @@
               updates_before: "{{ pkg_lines }}"
               updates_count: "{{ pkg_lines | length }}"
               mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
-              status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
+              status: "{{ 'DRY-RUN' if (patch_do_dry_run | bool) else 'APPLIED' }}"
               reboot_needed: "{{ (needs_restarting.rc == 1 and 'Reboot is required' in needs_restarting.stdout) and not (reboot_result is changed) }}"
               timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
           vars:
@@ -262,6 +282,7 @@
   become: true
   gather_facts: true
   serial: 1  # softwareupdate is slow and downloads are large
+  vars: *patch_switches
   tasks:
     # A failure is recorded (rescue) so the host shows up as FAILED in the
     # report and the email; the last play then fails the host for real.
@@ -271,6 +292,8 @@
           ansible.builtin.command: softwareupdate --list
           register: su_list
           changed_when: false
+          # Read-only: also runs under --check, so a dry run lists what it would install.
+          check_mode: false
           tags: [always]
 
         - name: Extract update labels
@@ -295,14 +318,14 @@
               {{ ['--user', patch_macos_update_user, '--stdinpass']
                  if (patch_macos_update_user | length > 0) else [] }}
             restart: >-
-              {{ ['--restart'] if (patch_reboot_allowed | bool and patch_macos_allow_restart | bool) else [] }}
+              {{ ['--restart'] if (patch_do_reboot | bool and patch_macos_allow_restart | bool) else [] }}
           register: macos_install
           changed_when: (macos_install.rc | default(1)) == 0
           # With --restart the Mac can go down before the command returns.
           ignore_unreachable: true
           no_log: "{{ patch_macos_update_user | length > 0 }}"
           when:
-            - not (patch_dry_run | bool)
+            - not (patch_do_dry_run | bool)
             - macos_labels | length > 0
           tags: [full_update, security_only]
 
@@ -311,10 +334,10 @@
             delay: 30
             timeout: "{{ patch_reboot_timeout }}"
           when:
-            - not (patch_dry_run | bool)
+            - not (patch_do_dry_run | bool)
             - macos_labels | length > 0
             - macos_restart_needed | bool
-            - patch_reboot_allowed | bool
+            - patch_do_reboot | bool
             - patch_macos_allow_restart | bool
           tags: [always]
 
@@ -326,11 +349,11 @@
               updates_before: "{{ macos_labels }}"
               updates_count: "{{ macos_labels | length }}"
               mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
-              status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
+              status: "{{ 'DRY-RUN' if (patch_do_dry_run | bool) else 'APPLIED' }}"
               reboot_needed: >-
                 {{ (macos_restart_needed | bool)
-                   and not (patch_reboot_allowed | bool and patch_macos_allow_restart | bool)
-                   and not (patch_dry_run | bool) }}
+                   and not (patch_do_reboot | bool and patch_macos_allow_restart | bool)
+                   and not (patch_do_dry_run | bool) }}
               timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
           tags: [always]
       rescue:
@@ -356,6 +379,7 @@
   gather_facts: true
   serial: "{{ patch_serial | default('100%') }}"
   vars:
+    <<: *patch_switches
     win_categories: >-
       {{ patch_windows_security_categories if (patch_security_only | bool) else patch_windows_categories }}
   tasks:
@@ -376,11 +400,11 @@
             category_names: "{{ win_categories }}"
             reject_list: "{{ patch_windows_reject_list }}"
             state: installed
-            reboot: "{{ (patch_reboot_allowed | bool) and (patch_windows_auto_reboot | bool) }}"
+            reboot: "{{ (patch_do_reboot | bool) and (patch_windows_auto_reboot | bool) }}"
             reboot_timeout: "{{ patch_windows_reboot_timeout }}"
           register: win_install
           when:
-            - not (patch_dry_run | bool)
+            - not (patch_do_dry_run | bool)
             - (win_search.found_update_count | int) > 0
           tags: [full_update, security_only]
 
@@ -393,7 +417,7 @@
               updates_count: "{{ win_search.found_update_count | default(0) }}"
               installed_count: "{{ win_install.installed_update_count | default(0) }}"
               mode: "{{ 'security' if (patch_security_only | bool) else 'full' }}"
-              status: "{{ 'DRY-RUN' if (patch_dry_run | bool) else 'APPLIED' }}"
+              status: "{{ 'DRY-RUN' if (patch_do_dry_run | bool) else 'APPLIED' }}"
               reboot_needed: "{{ win_install.reboot_required | default(false) }}"
               timestamp: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
           tags: [always]
@@ -421,12 +445,15 @@
   hosts: all
   gather_facts: false
   tags: [always]
+  vars: *patch_switches
   tasks:
     - name: Create report directory on the controller
       ansible.builtin.file:
         path: "{{ patch_report_dir }}/patch-runs"
         state: directory
         mode: "0755"
+      # The run record is written under --check too; its status says DRY-RUN.
+      check_mode: false
       delegate_to: localhost
       run_once: true
       vars: &controller_vars
@@ -439,6 +466,7 @@
         content: "{{ patch_result | to_nice_json }}\n"
         dest: "{{ patch_report_dir }}/patch-runs/{{ inventory_hostname }}.json"
         mode: "0644"
+      check_mode: false
       delegate_to: localhost
       vars: *controller_vars
       when:
@@ -457,7 +485,7 @@
         subject: >-
           {{ email_subject_prefix }} Patching
           {{ 'FAILED on some hosts' if (all_results | selectattr('status', 'equalto', 'FAILED') | list | length > 0)
-             else ('dry run' if (patch_dry_run | bool) else 'complete') }}:
+             else ('dry run' if (patch_do_dry_run | bool) else 'complete') }}:
           {{ all_results | length }} hosts, {{ now().strftime('%Y-%m-%d') }}
         subtype: html
         body: "{{ lookup('ansible.builtin.template', 'patch_report_email.html.j2') }}"

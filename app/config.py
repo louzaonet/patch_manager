@@ -28,6 +28,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Nodes that call an LLM. Kept here so config, router and /api/health agree.
 LLM_NODES: tuple[str, ...] = ("classify_intent", "generate_briefing", "handle_question")
 
+# Same vocabulary as community.general.mail, so one set of values fits both.
+SMTP_SECURE_MODES: tuple[str, ...] = ("starttls", "always", "never", "try")
+
 
 def _env_file() -> str | None:
     """Env file to read. PATCH_AI_ENV_FILE overrides; empty string disables it."""
@@ -159,6 +162,32 @@ class Settings(BaseSettings):
     # Security token shown when creating a Teams Outgoing Webhook (base64).
     teams_outgoing_secret: str | None = Field(default=None, alias="TEAMS_OUTGOING_SECRET")
 
+    # ─── Scheduled analysis and email ───────────────────────────────────
+    # Cron expression (minute hour day month weekday) evaluated in
+    # AUTO_ANALYSIS_TZ. Empty = no scheduled analysis. Put it a few minutes
+    # after Semaphore's Check Updates schedule.
+    auto_analysis_cron: str = Field(default="", alias="AUTO_ANALYSIS_CRON")
+    auto_analysis_tz: str = Field(default="UTC", alias="AUTO_ANALYSIS_TZ")
+    # Ansible limit for the scheduled analysis; empty = all hosts.
+    auto_analysis_target: str = Field(default="", alias="AUTO_ANALYSIS_TARGET")
+    # The subject is flagged when the newest host report is older than this:
+    # Check Updates probably did not run before the analysis.
+    auto_analysis_fresh_hours: float = Field(default=2.0, alias="AUTO_ANALYSIS_FRESH_HOURS")
+
+    # SMTP used by the AI service itself (not by Semaphore). SMTP_SECURE takes
+    # the same values as the playbooks: starttls | always (TLS on connect) |
+    # never | try (STARTTLS if the server offers it).
+    smtp_host: str = Field(default="", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_secure: str = Field(default="starttls", alias="SMTP_SECURE")
+    smtp_user: str = Field(default="", alias="SMTP_USER")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_timeout: float = Field(default=30.0, alias="SMTP_TIMEOUT")
+    email_from: str = Field(default="", alias="EMAIL_FROM")
+    # Comma-separated recipients.
+    email_to: str = Field(default="", alias="EMAIL_TO")
+    email_subject_prefix: str = Field(default="[PATCH-AI]", alias="EMAIL_SUBJECT_PREFIX")
+
     # ─── Logging ────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
@@ -200,6 +229,51 @@ class Settings(BaseSettings):
         return {node: spec for node, spec in mapping.items() if spec}
 
     @property
+    def email_recipients(self) -> list[str]:
+        return [a.strip() for a in self.email_to.split(",") if a.strip()]
+
+    @property
+    def email_configured(self) -> bool:
+        return bool(self.smtp_host and self.email_from and self.email_recipients)
+
+    def _email_problems(self) -> list[str]:
+        problems: list[str] = []
+        if self.smtp_secure.lower() not in SMTP_SECURE_MODES:
+            problems.append(f"SMTP_SECURE must be one of {', '.join(SMTP_SECURE_MODES)}.")
+        addresses = [self.email_from, *self.email_recipients] if self.email_from else self.email_recipients
+        for address in addresses:
+            # Not a full RFC 5322 check: catches typos and header injection.
+            if "@" not in address or any(c in address for c in "\r\n,;"):
+                problems.append(f"'{address}' is not a valid email address (EMAIL_FROM / EMAIL_TO).")
+        return problems
+
+    def _schedule_problems(self) -> list[str]:
+        from zoneinfo import ZoneInfoNotFoundError
+
+        from app.services.cron import CronSchedule, resolve_tz
+
+        problems: list[str] = []
+        try:
+            tz = resolve_tz(self.auto_analysis_tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            problems.append(
+                f"AUTO_ANALYSIS_TZ '{self.auto_analysis_tz}' is not a known time zone "
+                "(zones other than UTC need the system tzdata package or pip's tzdata)."
+            )
+            tz = None
+        try:
+            schedule = CronSchedule.parse(self.auto_analysis_cron)
+            if tz is not None:
+                from datetime import datetime
+
+                schedule.next_after(datetime.now(tz), tz)
+        except ValueError as exc:
+            problems.append(f"AUTO_ANALYSIS_CRON: {exc}")
+        if not self.email_configured:
+            problems.append("AUTO_ANALYSIS_CRON needs SMTP_HOST, EMAIL_FROM and EMAIL_TO.")
+        return problems
+
+    @property
     def slack_approvers(self) -> set[str]:
         return {u.strip() for u in self.slack_approver_ids.split(",") if u.strip()}
 
@@ -222,6 +296,10 @@ class Settings(BaseSettings):
             problems.append(
                 "TEAMS_ENABLED=true requires TEAMS_WEBHOOK_URL and/or TEAMS_OUTGOING_SECRET."
             )
+        if self.smtp_host or self.email_from or self.email_to:
+            problems.extend(self._email_problems())
+        if self.auto_analysis_cron.strip():
+            problems.extend(self._schedule_problems())
         return problems
 
 

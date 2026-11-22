@@ -19,9 +19,10 @@ from fastapi.templating import Jinja2Templates
 from app.api.routes import router
 from app.config import get_settings
 from app.security import Principal, require_user
+from app.services.auto_analysis import auto_analysis
 from app.tools.llm_router import get_active_models
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 
 def _configure_logging(level_name: str) -> None:
@@ -56,8 +57,13 @@ async def lifespan(app: FastAPI):
     if s.app_auth_disabled:
         logger.warning("auth_disabled", hint="APP_AUTH_DISABLED=true is for local development only")
     logger.info("starting", version=VERSION, llm=get_active_models(),
-                slack=s.slack_enabled, teams=s.teams_enabled)
+                slack=s.slack_enabled, teams=s.teams_enabled, email=s.email_configured)
+    if s.smtp_user and s.smtp_secure.lower() == "never":
+        logger.warning("smtp_cleartext_login",
+                       hint="SMTP_USER with SMTP_SECURE=never sends the password in clear")
+    auto_analysis.start()
     yield
+    await auto_analysis.stop()
     logger.info("shutting_down")
 
 
@@ -97,7 +103,9 @@ async def security_headers(request: Request, call_next):
 
 @app.get("/", include_in_schema=False)
 async def index(request: Request, user: Principal = Depends(require_user)):
-    return templates.TemplateResponse(request, "index.html", {"version": VERSION, "user": user.name})
+    return templates.TemplateResponse(request, "index.html", {
+        "version": VERSION, "user": user.name, "email_enabled": get_settings().email_configured,
+    })
 
 
 if settings.app_enable_docs:

@@ -61,19 +61,19 @@ class SemaphoreClient:
         return await self._request("GET", f"/api/project/{project_id}/templates")
 
     async def find_template_by_name(self, project_id: int, name: str) -> dict[str, Any] | None:
-        """Exact (case-insensitive) name match first, then unique substring match."""
+        """Exact name match, ignoring case and surrounding spaces.
+
+        No partial matching: "Apply Patches" must never pick "Apply Patches
+        (old)" or a copy someone is still editing. Two templates with the
+        same name are an error, not a coin toss.
+        """
         templates = await self.get_templates(project_id)
         wanted = name.strip().lower()
         exact = [t for t in templates if t.get("name", "").strip().lower() == wanted]
-        if exact:
-            return exact[0]
-        partial = [t for t in templates if wanted in t.get("name", "").lower()]
-        if len(partial) == 1:
-            return partial[0]
-        if len(partial) > 1:
-            names = ", ".join(t.get("name", "?") for t in partial)
-            raise SemaphoreError(f"Template name '{name}' is ambiguous: {names}")
-        return None
+        if len(exact) > 1:
+            ids = ", ".join(str(t.get("id", "?")) for t in exact)
+            raise SemaphoreError(f"Several templates are named '{name}' (ids {ids}); rename the extra ones")
+        return exact[0] if exact else None
 
     # ─── Tasks ──────────────────────────────────────────────────────────
 

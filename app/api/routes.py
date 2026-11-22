@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.agents.graph import run_agent
-from app.agents.nodes import hosts_in_scope
+from app.agents.nodes import hosts_in_scope, risk_rows
 from app.agents.state import ActionType, AgentState
 from app.config import get_settings
 from app.integrations.slack_bot import SlackBot
@@ -29,6 +29,7 @@ from app.security import (
     verify_slack_signature,
     verify_teams_hmac,
 )
+from app.services.auto_analysis import auto_analysis
 from app.services.plans import PlanNotFound, PlanStateError, plan_store
 from app.tools.inventory_reader import InventoryReader, validate_limit
 from app.tools.llm_router import get_active_models
@@ -83,19 +84,7 @@ class ChatResponse(BaseModel):
 def _to_response(state: AgentState) -> ChatResponse:
     risk_summary = None
     if state.all_hosts and state.action != ActionType.ASK_QUESTION:
-        risk_summary = [
-            {
-                "hostname": h.hostname,
-                "os_group": h.os_group,
-                "risk_score": h.risk_score,
-                "risk_factors": h.risk_factors[:3],
-                "updates": h.update_count,
-                "security_updates": h.security_count,
-                "kev": h.kev_cves[:5],
-                "report_age_hours": h.report_age_hours,
-            }
-            for h in sorted(hosts_in_scope(state), key=lambda x: x.risk_score, reverse=True)[:50]
-        ]
+        risk_summary = risk_rows(hosts_in_scope(state))
 
     plan_summary = None
     if state.patch_plan:
@@ -236,6 +225,20 @@ async def action_run_check(req: ActionRequest | None = None,
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     audit.info("check_started", by=user.name, limit=limit, task_id=task.get("id"))
     return {"task_id": task.get("id"), "project_id": project_id, "limit": limit}
+
+
+@router.post("/api/action/email-report")
+async def action_email_report(user: Principal = Depends(require_user_csrf)) -> dict[str, Any]:
+    """Run the scheduled analysis now and email it (same content as the schedule)."""
+    if not get_settings().email_configured:
+        raise HTTPException(status_code=409,
+                            detail="Email is not configured (SMTP_HOST, EMAIL_FROM, EMAIL_TO).")
+    try:
+        result = await auto_analysis.run_once(trigger=f"manual:{user.name}")
+    except Exception as exc:
+        # The SMTP error tells the operator what to fix (port, TLS, relay rules).
+        raise HTTPException(status_code=502, detail=f"Report not sent: {str(exc)[:300]}") from exc
+    return {"sent": True, **result}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -476,4 +479,5 @@ async def info(user: Principal = Depends(require_user)) -> dict[str, Any]:
         "nvd": {"enabled": s.nvd_enabled, "api_key": bool(s.nvd_api_key)},
         "kev": s.kev_enabled,
         "plan_ttl_minutes": s.plan_ttl_minutes,
+        "auto_analysis": auto_analysis.status(),
     }

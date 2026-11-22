@@ -58,8 +58,10 @@ fi
 
 cat <<MSG
 
-Expose it on the host's LAN (optional), e.g. host port 8443 -> container 443:
-  lxc config device add $NAME https proxy listen=tcp:0.0.0.0:8443 connect=tcp:127.0.0.1:443
+If the container has its own LAN address (macvlan or bridged NIC, see
+"lxc list"), browse to https://<container-ip>/. Otherwise expose it on the
+host, e.g. host port 9443 -> container 443 (8443 is taken by the LXD API):
+  lxc config device add $NAME https proxy listen=tcp:0.0.0.0:9443 connect=tcp:127.0.0.1:443
 The container also needs to reach your hosts (SSH 22, WinRM 5986) and
 your LLM endpoint (openrouter.ai, or a local llama-swap/Ollama host).
 MSG

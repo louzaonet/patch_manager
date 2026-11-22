@@ -1,6 +1,6 @@
 [project]
 name = "patch-manager-ai"
-version = "1.0.2"
+version = "1.0.3"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

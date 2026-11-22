@@ -9,7 +9,7 @@ Update detection, patching and reporting for Ubuntu, Rocky Linux, macOS and Wind
 | Automation | Ansible playbooks | detect, install, reboot, per-host JSON reports, email |
 | Web management | Semaphore UI | run and schedule playbooks, key store, API |
 | AI | LangGraph + FastAPI (`/ai/`) | KEV/NVD enrichment, risk scoring, briefings, chat, patch plans with approval |
-| Notifications | Email, Slack, Teams | HTML reports, `/patch` slash command, Workflows cards |
+| Notifications | Email, Slack, Teams | HTML reports from the playbooks, scheduled AI risk report, `/patch` slash command, Workflows cards |
 
 ```
   Dashboard / Slack / Teams ──► AI service ──► LLM (llama-swap or OpenRouter)

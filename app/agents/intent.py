@@ -123,12 +123,18 @@ def parse_intent(text: str) -> Intent | None:
         return None
 
 
+# First match wins. Explicit action verbs come first; read-only questions
+# ("list pending patches", "which hosts have updates available") come before
+# the bare word "patch", which alone used to turn a question into a plan.
 _KEYWORDS: list[tuple[str, str]] = [
     (r"\b(status|progress|running|last (run|job|task))\b", "status"),
-    (r"\b(apply|install|patch(?:es)?(?! report| summary)|upgrade|deploy updates?)\b", "apply_patches"),
+    (r"\b(apply|install|upgrade|deploy)\b|\bplan\b.*\b(patch|update)", "apply_patches"),
     (r"\b(risk|vulnerab|cve|exposure|exploit)", "analyze_risk"),
     (r"\b(report|summary|summari[sz]e|briefing)\b", "generate_report"),
-    (r"\b(pending|available|outdated|check)\b.*\b(updates?|patch)", "check_updates"),
+    (r"\b(pending|available|outdated|outstanding|missing|check|list|show|which|how many)\b"
+     r".*\b(updates?|patch(?:es)?)\b"
+     r"|\b(updates?|patch(?:es)?)\b.*\b(pending|available|outstanding)\b", "check_updates"),
+    (r"\bpatch(?:es|ing)?\b", "apply_patches"),
 ]
 
 

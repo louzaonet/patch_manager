@@ -30,6 +30,12 @@
                         title="Runs the Check Updates template in Semaphore (read-only on hosts)">
                     <span class="icon">🔄</span> Refresh host data
                 </button>
+                {% if email_enabled %}
+                <button class="action-btn action-btn--subtle" id="emailReportBtn" type="button"
+                        title="Runs the scheduled analysis now and emails the report">
+                    <span class="icon">✉️</span> Email report now
+                </button>
+                {% endif %}
 
                 <h3>Target</h3>
                 <select id="targetGroup" class="select-input">
@@ -69,10 +75,26 @@
                 </div>
             </div>
 
-            <div class="risk-dashboard hidden" id="riskDashboard">
-                <h3>Risk overview</h3>
-                <div class="risk-cards" id="riskCards"></div>
-            </div>
+            <!-- Risk overview: one row that scrolls sideways, so a large inventory
+                 never pushes the input box off the screen. -->
+            <section class="risk-strip hidden" id="riskDashboard" aria-label="Risk overview">
+                <div class="risk-strip__bar">
+                    <button class="risk-strip__toggle" id="riskToggle" type="button"
+                            aria-expanded="true" aria-controls="riskBody">
+                        <span class="risk-strip__chevron" aria-hidden="true">▾</span>
+                        <span class="risk-strip__title">Risk overview</span>
+                        <span class="risk-strip__counts" id="riskCounts"></span>
+                    </button>
+                    <div class="risk-strip__nav">
+                        <button class="risk-strip__arrow" id="riskPrev" type="button" aria-label="Scroll left">‹</button>
+                        <button class="risk-strip__arrow" id="riskNext" type="button" aria-label="Scroll right">›</button>
+                    </div>
+                </div>
+                <div class="risk-strip__body" id="riskBody">
+                    <div class="risk-cards" id="riskCards" role="list"></div>
+                    <div class="risk-detail hidden" id="riskDetail" aria-live="polite"></div>
+                </div>
+            </section>
 
             <div class="input-area">
                 <div class="input-wrapper">

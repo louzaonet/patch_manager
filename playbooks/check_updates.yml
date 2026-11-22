@@ -7,6 +7,10 @@
 #
 #   ansible-playbook playbooks/check_updates.yml
 #   ansible-playbook playbooks/check_updates.yml --limit ubuntu_servers
+#
+# Every play sets check_mode: false. This playbook only reads the hosts, and
+# under --check (Semaphore's "Dry Run" box) the listing commands would be
+# skipped and the reports could not be built.
 # =============================================================================
 
 # ─── Ubuntu ─────────────────────────────────────────────────────────────────
@@ -14,6 +18,7 @@
   hosts: ubuntu_servers
   become: true
   gather_facts: true
+  check_mode: false
   tasks:
     - name: Refresh APT cache
       ansible.builtin.apt:
@@ -56,6 +61,7 @@
   hosts: rocky_servers
   become: true
   gather_facts: true
+  check_mode: false
   tasks:
     # dnf exits 100 when updates are available
     - name: List available updates
@@ -116,6 +122,7 @@
   hosts: macos_servers
   become: true
   gather_facts: true
+  check_mode: false
   tasks:
     # Output (macOS 13+):
     #   * Label: macOS Tahoe 26.1-25B78
@@ -148,6 +155,7 @@
 - name: "Check pending updates: Windows"
   hosts: windows_servers
   gather_facts: true
+  check_mode: false
   tasks:
     - name: Search for updates
       ansible.windows.win_updates:
@@ -184,6 +192,7 @@
 - name: "Write host reports and send summary"
   hosts: all
   gather_facts: false
+  check_mode: false
   tasks:
     - name: Create report directories on the controller
       ansible.builtin.file:

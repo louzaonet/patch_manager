@@ -16,6 +16,13 @@
 set -euo pipefail
 
 SEMAPHORE_VERSION="${SEMAPHORE_VERSION:-2.19.12}"
+# SHA-256 of the official .deb files of the default version, copied from the
+# release's semaphore_2.19.12_checksums.txt and checked against the downloads.
+# Another SEMAPHORE_VERSION is checked against that release's checksums file.
+declare -A SEMAPHORE_DEB_SHA256=(
+  [2.19.12_amd64]=a5c1bd199a6c756b993567a86aea9e74b5760dd2bfd6e3cc5298921008409b59
+  [2.19.12_arm64]=f0757450721c62b8035b17a4861a06b3786229ad4e39008b8dc469921009bd9b
+)
 APP_DIR=/opt/patch-manager
 ANSIBLE_VENV=/opt/ansible-venv
 REPORTS_DIR=/var/lib/patch-manager/reports
@@ -71,15 +78,40 @@ log "Installing Ansible into $ANSIBLE_VENV"
   -p /usr/share/ansible/collections --upgrade
 "$ANSIBLE_VENV/bin/ansible" --version | head -1
 
+# The venv is not on anyone's PATH. Link the CLI tools so "ansible ..." works
+# in a root shell. An existing command that is not ours is left alone.
+for tool in ansible ansible-playbook ansible-inventory ansible-galaxy ansible-vault ansible-config ansible-doc; do
+  link="/usr/local/bin/$tool"
+  if [[ ! -e "$link" || "$(readlink -f "$link")" == "$ANSIBLE_VENV"/* ]]; then
+    ln -sfn "$ANSIBLE_VENV/bin/$tool" "$link"
+  else
+    echo "Not linking $tool: $link already exists"
+  fi
+done
+
 # ─── Semaphore ──────────────────────────────────────────────────────────────
 log "Installing Semaphore $SEMAPHORE_VERSION"
 ARCH="$(dpkg --print-architecture)"   # amd64 | arm64
 if ! command -v semaphore >/dev/null || ! semaphore version 2>/dev/null | grep -q "$SEMAPHORE_VERSION"; then
   DEB="semaphore_${SEMAPHORE_VERSION}_linux_${ARCH}.deb"
-  curl -fsSL -o "/tmp/$DEB" \
-    "https://github.com/semaphoreui/semaphore/releases/download/v${SEMAPHORE_VERSION}/${DEB}"
-  dpkg -i "/tmp/$DEB"
-  rm -f "/tmp/$DEB"
+  BASE_URL="https://github.com/semaphoreui/semaphore/releases/download/v${SEMAPHORE_VERSION}"
+  DL_DIR="$(mktemp -d)"
+  curl -fsSL -o "$DL_DIR/$DEB" "$BASE_URL/$DEB"
+  EXPECTED="${SEMAPHORE_DEB_SHA256[${SEMAPHORE_VERSION}_${ARCH}]:-}"
+  if [[ -z "$EXPECTED" ]]; then
+    # Not pinned in this script: use the release's own checksums file. That
+    # catches a corrupt or truncated download, not a tampered release.
+    EXPECTED="$(curl -fsSL "$BASE_URL/semaphore_${SEMAPHORE_VERSION}_checksums.txt" \
+      | awk -v f="$DEB" '$2 == f {print $1}')"
+    [[ -n "$EXPECTED" ]] || { echo "No checksum for $DEB in the release" >&2; exit 1; }
+  fi
+  if ! echo "$EXPECTED  $DL_DIR/$DEB" | sha256sum --check --quiet -; then
+    echo "SHA-256 mismatch for $DEB: not installing it" >&2
+    rm -rf "$DL_DIR"
+    exit 1
+  fi
+  dpkg -i "$DL_DIR/$DEB"
+  rm -rf "$DL_DIR"
 fi
 
 if [[ ! -f /etc/semaphore/config.json ]]; then

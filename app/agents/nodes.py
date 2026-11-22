@@ -312,6 +312,26 @@ async def fetch_task_status(state: AgentState) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def risk_rows(hosts: list[HostInfo], limit: int = 200) -> list[dict[str, Any]]:
+    """Risk overview rows, highest risk first. Used by the dashboard and the email."""
+    return [
+        {
+            "hostname": h.hostname,
+            "os_group": h.os_group,
+            "os_name": h.os_name or None,
+            "risk_score": h.risk_score,
+            "risk_class": RiskScorer.classify(h.risk_score),
+            "risk_factors": h.risk_factors[:3],
+            "updates": h.update_count,
+            "security_updates": h.security_count,
+            "kev": h.kev_cves[:5],
+            "reboot_required": h.reboot_required,
+            "report_age_hours": h.report_age_hours,
+        }
+        for h in sorted(hosts, key=lambda x: x.risk_score, reverse=True)[:limit]
+    ]
+
+
 def _host_summary(hosts: list[HostInfo]) -> list[dict[str, Any]]:
     # No IP addresses: they add nothing to the briefing and shouldn't leave
     # the network when a cloud model is used.
@@ -400,27 +420,42 @@ async def generate_briefing(state: AgentState) -> dict[str, Any]:
             "Say so clearly; there is nothing to approve."
         )
 
+    # Sections that do not apply to this request are left out, not sent as
+    # "none"/"n/a": the model used to report those as data gaps every time.
+    sections = [
+        f"HOSTS ({len(hosts)}; highest risk first):\n{json.dumps(_host_summary(hosts), indent=1)}",
+        "CVES REPORTED BY HOST PACKAGE ADVISORIES:\n"
+        + (json.dumps(cves, indent=1) if cves else "none reported")
+        + "\n(Only Rocky Linux reports carry CVE ids. For Ubuntu, macOS and Windows hosts an empty "
+        "list is normal and NOT a data gap; their risk comes from security update counts and KEV.)",
+    ]
+    if context:
+        sections.append(
+            "RECENT CRITICAL CVES FOR THESE OS FAMILIES (context only, not confirmed on any host):\n"
+            + json.dumps(context, indent=1)
+        )
+    if state.patch_plan or state.action == ActionType.APPLY_PATCHES:
+        sections.append(f"PATCH PLAN: {json.dumps(_plan_summary(state)) if state.patch_plan else 'none'}"
+                        + (f"\n{plan_note}" if plan_note else ""))
+    elif plan_note:
+        sections.append(plan_note)
+    if state.action == ActionType.STATUS or state.recent_tasks:
+        tasks = json.dumps(state.recent_tasks) if state.recent_tasks else "none"
+        sections.append(f"RECENT SEMAPHORE TASKS: {tasks}")
+    sections.append(f"WARNINGS: {state.warnings or 'none'}\nERRORS: {state.errors or 'none'}")
+    data = "\n\n".join(sections)
+
     prompt = f"""You are a senior security engineer writing a patch briefing for an operations team.
 Be concise and concrete. Only state facts present in the data below; if data is missing or stale, say so.
+"report_age_h" is the age of each host's update report: that is how fresh the data is.
+OS names and versions are reported by the hosts themselves; do not question a version you
+don't recognise (it may be newer than your training data).
 
 REQUEST: {state.user_message[:1000]}
 ACTION: {state.action.value}
 SCOPE: {state.target_hosts or "all hosts"}
 
-HOSTS ({len(hosts)}; highest risk first):
-{json.dumps(_host_summary(hosts), indent=1)}
-
-CVES REPORTED BY HOST PACKAGE ADVISORIES:
-{json.dumps(cves, indent=1) if cves else "none reported"}
-
-RECENT CRITICAL CVES FOR THESE OS FAMILIES (context only, not confirmed on any host):
-{json.dumps(context, indent=1) if context else "none"}
-
-PATCH PLAN: {json.dumps(_plan_summary(state)) if state.patch_plan else "none"}
-{plan_note}
-RECENT SEMAPHORE TASKS: {json.dumps(state.recent_tasks) if state.recent_tasks else "n/a"}
-WARNINGS: {state.warnings or "none"}
-ERRORS: {state.errors or "none"}
+{data}
 
 Write markdown with: a 2-3 sentence summary, critical findings (if any), recommended actions,
 and a short breakdown by host group. No filler, no generic advice."""
@@ -460,7 +495,8 @@ Playbooks:
 - reboot_if_needed.yml: reboot only hosts that need it
 
 Useful extra vars: patch_security_only=true, patch_dry_run=true, patch_reboot_allowed=false,
-plus --limit <group_or_host>.
+plus --limit <group_or_host>. Hosts with patch_reboot_blocked: true in the inventory are never
+rebooted by any playbook.
 
 Conversation so far: {json.dumps(state.messages[-10:])}
 

@@ -1,5 +1,43 @@
 # Registro de cambios
 
+## 1.0.3 (2026-11-22)
+
+### Novedades
+
+- Informe programado por correo: el servicio de IA hace el análisis de riesgo con su propio cron (`AUTO_ANALYSIS_CRON`, `AUTO_ANALYSIS_TZ`) y envía por SMTP una tabla con todos los hosts y el resumen de la IA. El asunto avisa de CVE en KEV, de hosts que no respondieron a la última comprobación y de informes sin refrescar. Se puede lanzar a mano con el botón **Email report now** o con `POST /api/action/email-report`, y `/api/info` muestra la próxima ejecución y el resultado de la última. Variables nuevas en `ai.env`: `AUTO_ANALYSIS_*`, `SMTP_*`, `EMAIL_FROM`, `EMAIL_TO`, `EMAIL_SUBJECT_PREFIX`. Sin dependencias nuevas: el cron lo interpreta el propio servicio.
+- Panel: el resumen de riesgo es ahora una fila de tarjetas que se desplaza en horizontal, con recuento por nivel, plegable y con el detalle de un host al tocar su tarjeta. Con unos 20 hosts la rejilla anterior empujaba el cuadro de texto fuera de la pantalla. El panel muestra todos los hosts del alcance, hasta 200 (antes, como mucho 24 tarjetas).
+- Panel: las tablas markdown de las respuestas de la IA se muestran como tablas; antes salían en una sola línea.
+- Inventario: `patch_reboot_blocked: true` impide que cualquier playbook reinicie ese host, diga lo que diga `patch_reboot_allowed`. Pensado para hosts LXD o de máquinas virtuales y para el host que ejecuta Semaphore.
+- `install.sh` enlaza `ansible`, `ansible-playbook` y el resto de comandos de `/opt/ansible-venv/bin` en `/usr/local/bin`.
+
+### Seguridad
+
+- Planes aprobados: enviaban siempre `patch_reboot_allowed=true` como variable extra, que gana a cualquier valor del inventario, así que un grupo con `patch_reboot_allowed: false` en `group_vars` se reiniciaba igual. Ahora solo se envía cuando es `false` ("Prevent reboots"), y el veto `patch_reboot_blocked` se respeta en todos los casos.
+- Plantillas de Semaphore: si no había una con el nombre exacto, se usaba la única cuyo nombre lo contuviera, de modo que "Apply Patches (old)" podía recibir los planes aprobados. Ahora solo vale el nombre exacto (sin distinguir mayúsculas) y dos plantillas con el mismo nombre dan un error.
+- `install.sh` comprueba el SHA-256 del `.deb` de Semaphore antes de instalarlo: contra valores fijados en el script para la versión por defecto, o contra el fichero de checksums de la release si se elige otra versión. Se descarga en un directorio temporal propio en vez de en una ruta fija de `/tmp`.
+
+### Correcciones
+
+- nginx (nativo y Docker): pasaba a Semaphore `Host $host`, que quita el puerto. Detrás de un puerto distinto del 443, como el dispositivo proxy de LXD, Semaphore rechazaba cualquier cambio con "cross-origin request blocked". Ahora usa `$http_host`.
+- `apply_patches.yml`: la casilla **Dry Run** de Semaphore (`--check`) no se trataba como simulación. Las tareas de instalación salían como `changed` sin instalar nada, el listado previo no se ejecutaba y no quedaba informe de la ejecución. Ahora `--check` equivale a `patch_dry_run=true`: lista lo pendiente, no instala ni reinicia y deja el informe como `DRY-RUN`.
+- `check_updates.yml` con `--check` terminaba en verde sin escribir ningún informe. Como solo lee los hosts, ahora ignora el modo check. `reboot_if_needed.yml` también lee `dnf needs-restarting` en modo check.
+- Resumen de la IA: el prompt mandaba "Semaphore tasks: n/a", "patch plan: none" y "CVE: none" aunque no vinieran al caso, y el modelo los presentaba como datos que faltan en cada análisis. Esas secciones solo se envían cuando aplican, el prompt explica que en Ubuntu, macOS y Windows es normal no tener IDs de CVE, y que no debe dudar de versiones de SO que no conozca (Ubuntu 26.04).
+- Sin LLM, la detección por palabras clave convertía preguntas como "list pending patches" o "which hosts have pending patches?" en una petición de parcheo (que creaba un plan). Las preguntas de consulta se reconocen ahora antes.
+- `setup_winrm.ps1` creaba un certificado nuevo en cada ejecución y dejaba los anteriores en el almacén. Ahora reutiliza el suyo si le quedan más de 30 días, borra los que creó antes y lista, sin borrarlos, los autofirmados que pudieran quedar de versiones anteriores.
+- `create-container.sh` y la wiki proponían el puerto 8443 del host para el dispositivo proxy, que es el de la API de LXD. Ahora proponen el 9443 y explican que, si el contenedor tiene IP propia en la LAN, no hace falta.
+- Wiki: macvlan (el host LXD y sus contenedores no se ven), cómo actualizar sin perder el inventario, la casilla **Limit** de Semaphore, la precedencia de `group_vars/all.yml` sobre las variables de grupo de `hosts.yml`, y nuevas entradas de resolución de problemas.
+
+### Pruebas
+
+- 142 tests automáticos (56 nuevos), ruff, shellcheck, ansible-lint (perfil production), `ansible-playbook --syntax-check`, `nginx -t` de los dos sitios y `node --check` del JavaScript del panel.
+- `apply_patches.yml` y `check_updates.yml` ejecutados con `--check` contra un Ubuntu 24.04 local: no se instala nada, el informe de la ejecución queda como `DRY-RUN` con las actualizaciones pendientes, y el de comprobación se escribe. Con los ficheros de la 1.0.2, las dos ejecuciones terminan sin escribir informe.
+- El veto de reinicio, evaluado con `ansible-playbook` en seis combinaciones (sin variables, `patch_reboot_allowed=true/false`, `--check`, `patch_dry_run=true`, `patch_reboot_blocked=false`); `reboot_if_needed.yml` con `--check` salta el host bloqueado.
+- nginx 1.24 delante de un servidor que devuelve la cabecera recibida: con la 1.0.3 llega `Host: 10.40.50.230:9443`; con la 1.0.2, sin el puerto.
+- Correo: envío real a un servidor SMTP local (aiosmtpd, sin TLS) con un inventario de 19 hosts; el mensaje llega con las partes de texto y HTML, y el HTML se ha revisado en un navegador. Los modos `starttls`, `always`, `try` y el login se han probado con un cliente SMTP simulado, no contra un servidor real con TLS.
+- Panel: Chrome sin interfaz (Playwright) con 19 hosts a 1158×798 y 820×1100: el cuadro de texto queda a la vista, las flechas desplazan la fila, el plegado funciona y las tablas se pintan. No probado en un iPad real.
+- La comprobación del checksum de `install.sh`, probada aparte con los `.deb` reales de Semaphore 2.19.12 (amd64 y arm64) y con un fichero que no corresponde.
+- Sin probar: `setup_winrm.ps1` (no hay PowerShell aquí), una ejecución completa de `install.sh`, la configuración macvlan de la wiki tras un reinicio del host, y hosts reales Rocky, macOS y Windows.
+
 ## 1.0.2 (2026-11-15)
 
 ### Seguridad

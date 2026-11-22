@@ -21,6 +21,12 @@ email_subject_prefix: "[PATCH-MGR]"
 
 # ─── Patching policy ────────────────────────────────────────────────────────
 patch_reboot_allowed: true
+# Per-host veto, deliberately NOT defined here: set patch_reboot_blocked: true
+# on hosts that must never be rebooted by Patch Manager (LXD/VM hosts, the host
+# running Semaphore). It wins over patch_reboot_allowed, including the value an
+# approved plan sends. A var defined in this file would beat any group var
+# written in hosts.yml, which is why per-group overrides of patch_reboot_allowed
+# have to go in group_vars/<group>.yml instead.
 patch_reboot_timeout: 900          # seconds to wait for a host to come back
 patch_dry_run: false               # true = detect only, install nothing
 # Security-only mode. Also enabled by running with --tags security_only.
