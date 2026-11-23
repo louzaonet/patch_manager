@@ -1,5 +1,21 @@
 # Registro de cambios
 
+## 1.2.0 (2026-11-24)
+
+### Novedades
+
+- Capacidades: `run.on_request: true` (solo para las de `read_only`) hace que cualquier petición la ejecute, también las preguntas. Es para consultas bajo demanda, donde el último informe puede ser viejo o de otro comando; sin esta opción, una pregunta se responde con los últimos informes desde la 1.1.1.
+- Capacidades: `required: true` en un parámetro. Si falta el valor, la petición se rechaza antes de llamar a Semaphore, en vez de lanzar un playbook que fallará en su validación. No se puede combinar con `default`.
+- La IA responde en el idioma de la pregunta en las respuestas libres y en los resúmenes de las capacidades. El informe programado no cambia.
+
+### Seguridad
+
+- Capacidades: ningún parámetro de texto acepta `{{`, `{%` ni `{#`, permita lo que permita su patrón, y tampoco los valores de un `enum`. Ansible evalúa las plantillas Jinja de las variables extra en el controlador al usarlas, así que un valor como `{{ lookup('pipe', ...) }}` se ejecutaba en el contenedor del servicio aunque el playbook rechazara después el valor. Comprobado con ansible-core 2.22. Con los patrones del ejemplo no se podía dar, porque ninguno admite `{`, pero un manifiesto con un patrón amplio quedaba expuesto.
+
+### Pruebas
+
+- 8 tests nuevos (210 en total): `on_request` con una pregunta, `on_request` en una capacidad de tipo `changes`, parámetro obligatorio que falta, marcas de Jinja en un parámetro con patrón amplio y en un `enum`, e instrucción de idioma en los dos prompts.
+
 ## 1.1.1 (2026-11-23)
 
 ### Correcciones

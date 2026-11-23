@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.0 (2026-11-24)
+
+### New
+
+- Capabilities: `run.on_request: true` (only for `read_only` ones) makes every request run it, questions included. It is for on-demand queries, where the last report may be old or from another command; without it, since 1.1.1 a question is answered from the latest reports.
+- Capabilities: `required: true` on a parameter. When the value is missing the request is refused before calling Semaphore, instead of starting a playbook that will fail its own validation. It can't be combined with `default`.
+- The AI answers in the language of the question in free answers and in capability summaries. The scheduled report is unchanged.
+
+### Security
+
+- Capabilities: no string parameter accepts `{{`, `{%` or `{#`, whatever its pattern allows, and neither do `enum` values. Ansible renders Jinja in extra vars on the controller when they are used, so a value like `{{ lookup('pipe', ...) }}` ran inside the service container even if the playbook rejected the value afterwards. Checked with ansible-core 2.22. It could not happen with the example patterns, none of which allow `{`, but a manifest with a broad pattern was exposed.
+
+### Tests
+
+- 8 new tests (210 in total): `on_request` with a question, `on_request` on a `changes` capability, a missing required parameter, Jinja markers in a broad-pattern parameter and in an `enum`, and the language instruction in both prompts.
+
 ## 1.1.1 (2026-11-23)
 
 ### Fixes

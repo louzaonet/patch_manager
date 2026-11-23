@@ -7,7 +7,8 @@ its latest reports. See app/services/capabilities.py for the manifest rules.
   uses the reports it just wrote.
 - changes + run: a plan is created and nothing runs until a person approves
   it (dashboard, API or Slack), exactly like patching.
-- no run: the answer comes from the last reports.
+- no run: the answer comes from the last reports, except for read_only
+  capabilities with run.on_request, which run on every request.
 
 Template, host group, report path and allowed parameters come from the
 manifest; the model only picks the capability, the target and parameter
@@ -139,7 +140,8 @@ User request: {state.user_message[:1000]}
 Answer in concise markdown: what needs attention first, then a short line per host. Only state
 facts present in the reports. Name the hosts without a report and the stale ones. Whether the
 check was run just now is already shown to the user: do not say whether it ran, could run or
-failed to run; age_h tells how fresh each report is."""
+failed to run; age_h tells how fresh each report is. Answer in the same language as the user
+request."""
     try:
         # Through the module, so tests can replace nodes._ask_llm.
         text = await nodes._ask_llm("handle_question", prompt)
@@ -168,17 +170,19 @@ async def run_capability(state: AgentState) -> dict[str, Any]:
 
     warnings = list(state.warnings)
     header = f"**{cap.name}**: {cap.description}"
+    # On-demand queries (run.on_request) run even when the request is a question.
+    run_now = state.capability_run or (cap.risk == "read_only" and cap.run.on_request)
     refuse = None
     try:
         limit, hosts = _scope(cap, state)
     except CapabilityError as exc:
         limit, hosts = None, []
         refuse = f"it can't run on that target: {exc}."
-    if state.capability_run and state.rejected_target and not refuse:
+    if run_now and state.rejected_target and not refuse:
         refuse = f"'{state.rejected_target}' is not a host, group or valid limit in the inventory."
 
     extra: dict[str, Any] = {}
-    if state.capability_run and not refuse:
+    if run_now and not refuse:
         try:
             extra, param_warnings = cap.validate_params(state.capability_params)
             warnings.extend(param_warnings)
@@ -193,7 +197,7 @@ async def run_capability(state: AgentState) -> dict[str, Any]:
     run_note = ""
     plan_id = None
     plan_summary = None
-    if state.capability_run and cap.risk == "changes":
+    if run_now and cap.risk == "changes":
         pending = await plan_store.create_capability(cap, extra, limit, hosts, state.requested_by,
                                                      state.source, state.user_message)
         plan_id, plan_summary = pending.id, pending.summary
@@ -202,7 +206,7 @@ async def run_capability(state: AgentState) -> dict[str, Any]:
         run_note = (f"Plan `{pending.id}` is **waiting for approval**. Nothing has run yet. Approving it "
                     f"runs the Semaphore template **{cap.template}** on {where} ({count}) "
                     f"with {_vars_text(extra)}.")
-    elif state.capability_run:
+    elif run_now:
         run_note = await _run_read_only(cap, extra, limit, state.requested_by)
 
     parts = [header]
@@ -211,15 +215,15 @@ async def run_capability(state: AgentState) -> dict[str, Any]:
     if cap.reports:
         reports = read_reports(cap, hosts)
         parts.append(await _summarise(cap, state, reports))
-        if not state.capability_run:
+        if not run_now:
             hint = ("Ask to run it now for fresh data." if cap.risk == "read_only"
                     else "Ask to run it to create a plan for approval.")
             parts.append(f"_From the last reports. {hint}_")
-    elif not state.capability_run:
+    elif not run_now:
         parts.append("This capability has no reports to read. Ask to run it"
                      + (" (it needs approval)." if cap.risk == "changes" else "."))
     text = "\n\n".join(parts)
-    logger.info("capability_answered", capability=cap.name, run=state.capability_run,
+    logger.info("capability_answered", capability=cap.name, run=run_now,
                 plan_id=plan_id, hosts=len(hosts))
     return {"ai_response": text, "briefing": text, "plan_id": plan_id,
             "capability_plan": plan_summary, "warnings": warnings}

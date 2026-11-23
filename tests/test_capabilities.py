@@ -133,6 +133,9 @@ def test_loads_valid_manifests(capdir):
     ({"surprise": True}, "surprise"),
     ({"limit_group": "a,b"}, "limit_group"),
     ({"risk": "changes", "limit_group": None}, "limit_group"),
+    ({"risk": "changes", "run": {"on_request": True}}, "on_request"),
+    ({"params": {"x": {"type": "enum", "values": ["a", "{{ x }}"]}}}, "{{"),
+    ({"params": {"x": {"type": "int", "default": 1, "required": True}}}, "required"),
 ])
 def test_rejects_bad_manifests(env, change, message):
     directory = env["tmp"] / "caps"
@@ -430,3 +433,79 @@ def test_docker_check_playbook_matches_the_example():
     commands = [line for line in script.splitlines() if not line.lstrip().startswith("#")]
     assert "imagetools inspect" in script
     assert not any("docker pull" in c or "compose pull" in c for c in commands)
+
+
+# ─── 1.2.0: on_request, required parameters, Jinja in values, language ──
+
+
+def test_jinja_is_refused_whatever_the_pattern(env):
+    from app.services.capabilities import CapabilityError
+
+    directory = env["tmp"] / "caps"
+    directory.mkdir(mode=0o750)
+    loose = {**CHECK, "params": {"text": {"type": "string", "pattern": r"[^\n]{1,200}"}}}
+    _write(directory, "loose.yml", loose)
+    cap = _registry(directory).get("widget_check")
+    assert cap.validate_params({"text": "hello world"})[0]["text"] == "hello world"
+    for bad in ("{{ lookup('pipe', 'id') }}", "{% if 1 %}x{% endif %}", "a {# c #} b"):
+        with pytest.raises(CapabilityError, match="template"):
+            cap.validate_params({"text": bad})
+
+
+def test_required_parameter(env):
+    from app.services.capabilities import CapabilityError
+
+    directory = env["tmp"] / "caps"
+    directory.mkdir(mode=0o750)
+    _write(directory, "req.yml", {**CHECK, "params": {"mode": {"type": "enum", "values": ["a", "b"],
+                                                               "required": True}}})
+    cap = _registry(directory).get("widget_check")
+    with pytest.raises(CapabilityError, match="missing required parameter mode"):
+        cap.validate_params({})
+    assert cap.validate_params({"mode": "a"})[0] == {"mode": "a"}
+    assert "mode (one of a|b, required)" in cap.prompt_line()
+
+
+@pytest.fixture
+def on_request(capdir):
+    from app.services.capabilities import reload_registry
+
+    _write(capdir, "widget_check.yml", {**CHECK, "run": {"wait": True, "timeout": 30, "on_request": True}})
+    reload_registry()
+    return capdir
+
+
+@respx.mock
+async def test_on_request_runs_on_a_question(client, env, on_request, fake_llm, fast_poll):
+    fake = fake_llm(intent={"action": "capability", "capability": "widget_check", "run": False})
+    respx.get(f"{SEM}/templates").mock(return_value=httpx.Response(200, json=[{"id": 11, "name": "Widget Check"}]))
+    respx.get(f"{SEM}/templates/11").mock(return_value=httpx.Response(
+        200, json={"id": 11, "task_params": {"allow_override_limit": True}}))
+    tasks = respx.post(f"{SEM}/tasks").mock(return_value=httpx.Response(201, json={"id": 70}))
+    respx.get(f"{SEM}/tasks/70").mock(return_value=httpx.Response(200, json={"id": 70, "status": "success"}))
+    data = await _ask(client, "how much disk is left?")
+    assert tasks.called and "Ran now (Semaphore task #70)." in data["response"]
+    assert "From the last reports" not in data["response"]
+    assert "always runs when asked" in fake.prompts["classify_intent"][0]
+
+
+@respx.mock
+async def test_on_request_missing_required_param_is_refused(client, capdir, fake_llm):
+    from app.services.capabilities import reload_registry
+
+    params = {**CHECK["params"], "mode": {"type": "enum", "values": ["fast", "full"], "required": True}}
+    _write(capdir, "widget_check.yml", {**CHECK, "params": params, "run": {"on_request": True}})
+    reload_registry()
+    fake_llm(intent={"action": "capability", "capability": "widget_check"})
+    tasks = respx.post(f"{SEM}/tasks")
+    text = (await _ask(client, "widgets?"))["response"]
+    assert "Not run" in text and "missing required parameter mode" in text and not tasks.called
+
+
+async def test_answers_in_the_language_of_the_request(client, capdir, widget_reports, fake_llm):
+    fake = fake_llm(intent={"action": "capability", "capability": "widget_check"})
+    await _ask(client, "¿cómo están los widgets?")
+    assert "same language as the user\nrequest" in fake.prompts["handle_question"][0]
+    fake = fake_llm(intent={"action": "ask_question"})
+    await _ask(client, "¿qué es un CVE?")
+    assert "in the same language as the question" in fake.prompts["handle_question"][0]

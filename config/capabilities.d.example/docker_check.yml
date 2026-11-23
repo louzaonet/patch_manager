@@ -32,20 +32,30 @@ risk: read_only
 limit_group: docker_hosts
 
 # Extra vars the AI may set. Types: bool, int (min/max), enum (values),
-# string (pattern, full match). Names starting with ansible_ are refused.
-# Anything not listed here is dropped. This playbook needs none; for example:
+# string (pattern, full match). Names starting with ansible_ are refused, and
+# so is any value containing {{, {% or {# (Ansible would run it as a template
+# on the controller). required: true refuses the request when the value is
+# missing. Anything not listed here is dropped. This playbook needs none; e.g.:
 # params:
 #   docker_check_projects_only:
 #     type: bool
 #     description: only report projects with updates
 #     default: false
+#   docker_check_mode:
+#     type: enum
+#     values: [fast, full]
+#     required: true
 params: {}
 
 # Read-only runs: wait for the task (up to timeout seconds) and answer from
 # the fresh reports. wait: false just reports the Semaphore task number.
+# on_request: true (read-only only) runs it on every request, questions
+# included; for on-demand queries. Without it a question ("are there new
+# images?") is answered from the last reports and only "run it" runs it.
 run:
   wait: true
   timeout: 300
+  on_request: false
 
 # Per-host JSON reports, relative to REPORTS_PATH, with {host}.
 reports:

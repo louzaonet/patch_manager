@@ -59,6 +59,11 @@ MAX_MANIFESTS = 50
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_PARAMS = 20
 MAX_STRING_PARAM = 200
+# Ansible renders Jinja inside extra vars when the playbook uses them, on the
+# controller: "{{ lookup('pipe', ...) }}" in a parameter would run there,
+# whatever the playbook does with the value afterwards. Refused in every
+# string parameter, whatever its pattern allows.
+JINJA_MARKERS = ("{{", "{%", "{#")
 
 # Ansible variables that must never come from the AI as extra vars: they
 # control connection, privilege escalation, interpreters and the play itself.
@@ -88,12 +93,15 @@ class ParamSpec(BaseModel):
     min: int | None = None  # int
     max: int | None = None  # int
     default: bool | int | str | None = None  # sent when the AI gives no value
+    required: bool = False  # no value and no default: refused before calling Semaphore
 
     @model_validator(mode="after")
     def _consistent(self) -> ParamSpec:
         if self.type == "enum":
             if not self.values or not all(isinstance(v, str) and 0 < len(v) <= 100 for v in self.values):
                 raise ValueError("enum needs 'values': a list of short strings")
+            if any(m in v for v in self.values for m in JINJA_MARKERS):
+                raise ValueError("enum values can't contain {{, {% or {#")
         elif self.values is not None:
             raise ValueError("'values' is only for type enum")
         if self.type == "string":
@@ -109,6 +117,8 @@ class ParamSpec(BaseModel):
             raise ValueError("'min'/'max' are only for type int")
         if self.default is not None:
             self.default = self.coerce(self.default)
+            if self.required:
+                raise ValueError("'required' makes no sense with a 'default'")
         return self
 
     def coerce(self, value: Any) -> bool | int | str:
@@ -140,6 +150,8 @@ class ParamSpec(BaseModel):
                 raise ValueError(f"must be one of {', '.join(self.values or [])}")
             return text
         # string
+        if any(m in text for m in JINJA_MARKERS):
+            raise ValueError("can't contain {{, {% or {# (Ansible would run it as a template)")
         if not text or len(text) > MAX_STRING_PARAM or not re.fullmatch(self.pattern or "", text):
             raise ValueError("does not match the allowed pattern")
         return text
@@ -152,6 +164,9 @@ class RunSpec(BaseModel):
     # reports. Long jobs can set wait: false and report the task number.
     wait: bool = True
     timeout: int = Field(default=300, ge=10, le=3600)
+    # Read-only only: every request runs it, questions included. For on-demand
+    # queries whose last report may be stale or from another command.
+    on_request: bool = False
 
 
 class ReportsSpec(BaseModel):
@@ -238,6 +253,8 @@ class Capability(BaseModel):
         if self.risk == "changes" and not self.limit_group:
             # A plan must say which hosts it touches; the approver has to see them.
             raise ValueError("risk: changes needs limit_group")
+        if self.risk == "changes" and self.run.on_request:
+            raise ValueError("run.on_request is only for risk: read_only")
         return self
 
     # ─── Helpers ──────────────────────────────────────────────────────
@@ -261,6 +278,9 @@ class Capability(BaseModel):
                 extra[str(name)] = spec.coerce(value)
             except ValueError as exc:
                 raise CapabilityError(f"parameter '{name}': {exc}") from exc
+        missing = [n for n, p in self.params.items() if p.required and n not in extra]
+        if missing:
+            raise CapabilityError(f"missing required parameter {', '.join(missing)}")
         return extra, warnings
 
     def prompt_line(self) -> str:
@@ -268,8 +288,11 @@ class Capability(BaseModel):
         params = []
         for name, p in self.params.items():
             kind = f"one of {'|'.join(p.values or [])}" if p.type == "enum" else p.type
-            params.append(f"{name} ({kind}{': ' + p.description if p.description else ''})")
+            req = ", required" if p.required else ""
+            params.append(f"{name} ({kind}{req}{': ' + p.description if p.description else ''})")
         what = "CHANGES hosts, needs approval" if self.risk == "changes" else "read-only"
+        if self.run.on_request:
+            what += ", always runs when asked"
         line = f"- {self.name}: {self.description} [{what}"
         if self.limit_group:
             line += f"; hosts: {self.limit_group}"

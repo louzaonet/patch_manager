@@ -568,8 +568,8 @@ Conversation so far: {json.dumps(state.messages[-10:])}
 
 Question: {state.user_message[:2000]}
 
-Answer concisely in markdown. If the user wants something done, explain how; patching always
-goes through a plan that a human approves."""
+Answer concisely in markdown, in the same language as the question. If the user wants something
+done, explain how; patching always goes through a plan that a human approves."""
 
     try:
         text = await _ask_llm("handle_question", prompt)
