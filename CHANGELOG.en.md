@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.1 (2026-11-24)
+
+### Fixes
+
+- Capabilities: the AI summary gets the requested target and the hosts it covers ("Requested target: lxd_hosts... Hosts it matched: Archie, Logan, Nina, Ran"). It used to see only the reports and could answer that it didn't know which hosts were the LXD ones, even when that was exactly what had been queried.
+- Capabilities: the model no longer works out totals itself. It gives a total only when the report has one (a field such as `count`, `total`, `lines` or `updates`); otherwise it lists the items without counting them. In testing it said "50 packages" about a table of 46.
+
+### Tests
+
+- One new test and extra assertions in another (211 in total) on the target and the counting rule in the summary prompt.
+
 ## 1.2.0 (2026-11-24)
 
 ### New

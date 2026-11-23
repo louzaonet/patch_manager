@@ -1,5 +1,16 @@
 # Registro de cambios
 
+## 1.2.1 (2026-11-24)
+
+### Correcciones
+
+- Capacidades: el resumen de la IA recibe el destino pedido y los hosts que abarca ("Requested target: lxd_hosts... Hosts it matched: Archie, Logan, Nina, Ran"). Antes solo veía los informes y podía contestar que no sabía cuáles eran los hosts LXD aunque fuera justo lo que se había consultado.
+- Capacidades: el modelo ya no calcula totales por su cuenta. Solo da un total si el informe lo trae (un campo como `count`, `total`, `lines` o `updates`); si no, lista los elementos sin contarlos. En las pruebas dijo "50 paquetes" sobre una tabla de 46.
+
+### Pruebas
+
+- Un test nuevo y aserciones en otro (211 en total) sobre el destino y la regla de recuentos en el prompt del resumen.
+
 ## 1.2.0 (2026-11-24)
 
 ### Novedades
