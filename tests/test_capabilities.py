@@ -255,6 +255,9 @@ async def test_intent_prompt_lists_capabilities(client, capdir, fake_llm):
     assert "- widget_check: Checks the widgets" in prompt and "[read-only; hosts: ubuntu_servers]" in prompt
     assert "widget_deploy" in prompt and "CHANGES hosts, needs approval" in prompt
     assert "depth (int)" in prompt and "mode (one of fast|full)" in prompt
+    # A question about results must not launch the capability.
+    assert "true ONLY if the user explicitly asks to run" in prompt
+    assert "A question about\n  its results" in prompt
 
 
 # ─── Answers and runs ───────────────────────────────────────────────────
@@ -288,8 +291,8 @@ async def test_unknown_capability(client, capdir, fake_llm):
 
 @respx.mock
 async def test_run_read_only(client, env, capdir, fake_llm, fast_poll):
-    fake_llm(intent={"action": "capability", "capability": "widget_check", "run": True,
-                     "params": {"mode": "full", "evil": "x"}})
+    fake = fake_llm(intent={"action": "capability", "capability": "widget_check", "run": True,
+                            "params": {"mode": "full", "evil": "x"}})
     respx.get(f"{SEM}/templates").mock(return_value=httpx.Response(
         200, json=[{"id": 11, "name": "Widget Check"}, {"id": 7, "name": "Apply Patches"}]))
     respx.get(f"{SEM}/templates/11").mock(return_value=httpx.Response(
@@ -312,6 +315,10 @@ async def test_run_read_only(client, env, capdir, fake_llm, fast_poll):
     assert sent["template_id"] == 11 and sent["limit"] == "ubuntu_servers"
     assert json.loads(sent["environment"]) == {"depth": 2, "mode": "full"}
     assert "Ran now (Semaphore task #50)." in data["response"]
+    # The run status is shown by the service, not given to the model to restate.
+    summary_prompt = fake.prompts["handle_question"][0]
+    assert "Semaphore task" not in summary_prompt and "Ran now" not in summary_prompt
+    assert "do not say whether it ran" in summary_prompt
     assert any("evil" in w for w in data["warnings"])
     assert not data["has_plan"]
 

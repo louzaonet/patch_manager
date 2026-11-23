@@ -1,5 +1,16 @@
 # Registro de cambios
 
+## 1.1.1 (2026-11-23)
+
+### Correcciones
+
+- Capacidades: una pregunta sobre los resultados ("¿hay imágenes de docker nuevas?") hacía que el modelo lanzara la capacidad en vez de responder con los últimos informes. El prompt de intención pide ahora `run: true` solo cuando se pide expresamente lanzarla, ejecutarla o refrescarla. Con una capacidad de tipo `changes` esto habría creado un plan sin pedirlo.
+- Capacidades: el resumen de la IA podía contradecir el estado real de la ejecución ("no pude lanzar la tarea" debajo de "Ran now"). El estado lo muestra el servicio y ya no se pasa al modelo, que tiene instrucciones de no hablar de si se ejecutó; la antigüedad de cada informe (`age_h`) sigue indicando lo frescos que son los datos.
+
+### Pruebas
+
+- Tests nuevos sobre los dos prompts (202 en total). Los dos casos se reprodujeron con el modelo de producción desde el panel antes del cambio.
+
 ## 1.1.0 (2026-11-23)
 
 ### Novedades

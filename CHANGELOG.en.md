@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1 (2026-11-23)
+
+### Fixes
+
+- Capabilities: a question about the results ("are there new docker images?") made the model run the capability instead of answering from the latest reports. The intent prompt now asks for `run: true` only when the user explicitly asks to run, launch, execute or refresh it. With a `changes` capability this would have created a plan nobody asked for.
+- Capabilities: the AI summary could contradict the actual run status ("I couldn't run the task" under "Ran now"). The service shows the status and no longer passes it to the model, which is told not to talk about whether the check ran; each report's age (`age_h`) still tells how fresh the data is.
+
+### Tests
+
+- New assertions on both prompts (202 tests in total). Both cases were reproduced from the dashboard with the production model before the change.
+
 ## 1.1.0 (2026-11-23)
 
 ### New

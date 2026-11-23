@@ -111,8 +111,9 @@ Also extract:
   "live", "ahora", "actualizado"), otherwise false
 - capability: for action capability, the capability name from the list. null otherwise
 - params: for action capability, an object with only the params the user asked for. null otherwise
-- run: for action capability, true if the user wants it run or launched now; false if they ask
-  about its latest results
+- run: for action capability, true ONLY if the user explicitly asks to run, launch, execute or
+  refresh it ("run the docker check", "lanza el docker check", "check again now"). A question about
+  its results ("are there new images?", "¿hay imágenes nuevas?", "how are the widgets?") is false
 
 Reply with one JSON object and nothing else, for example:
 {{"action": "check_updates", "target_hosts": null,

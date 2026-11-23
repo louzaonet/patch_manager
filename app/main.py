@@ -22,7 +22,7 @@ from app.security import Principal, require_user
 from app.services.auto_analysis import auto_analysis
 from app.tools.llm_router import get_active_models
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 
 def _configure_logging(level_name: str) -> None:
