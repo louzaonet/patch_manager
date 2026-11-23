@@ -1,0 +1,40 @@
+# Secrets
+config/.env
+config/ai.env
+*.vault
+vault_password*
+.vault_pass*
+
+# TLS certificates (generated)
+docker/nginx/certs/
+
+# Ansible
+*.retry
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# SSH keys
+id_rsa*
+id_ed25519*
+*.key
+*.pem
+
+# Docker
+docker-compose.override.yml
+
+# Tool caches
+.ansible/
