@@ -1,0 +1,11 @@
+---
+profile: production
+exclude_paths:
+  - docker/
+  - deploy/
+  - tests/
+  - app/
+  - .venv/
+skip_list:
+  # We deliberately use "state: latest" in patching playbooks.
+  - package-latest
