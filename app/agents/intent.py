@@ -17,12 +17,15 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 ActionName = Literal[
     "analyze_risk", "check_updates", "apply_patches", "generate_report", "status", "ask_question",
-    "package_query",
+    "package_query", "capability",
 ]
 
 # A package name or a glob. The same pattern is enforced again by
 # package_query.yml before the name reaches a host.
 PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._*-]{0,99}$")
+# Same rule as the manifest names in app/services/capabilities.py.
+CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
+MAX_INTENT_PARAMS = 20
 
 
 class Intent(BaseModel):
@@ -33,6 +36,30 @@ class Intent(BaseModel):
     no_reboot: bool = False
     package: str | None = None
     live: bool = False
+    capability: str | None = None
+    params: dict[str, bool | int | float | str] | None = None
+    run: bool = False
+
+    @field_validator("capability", mode="before")
+    @classmethod
+    def _valid_capability(cls, value: Any) -> Any:
+        """Only a plausible manifest name; whether it exists is checked by the node."""
+        if value is None:
+            return None
+        value = str(value).strip().lower()
+        return value if CAPABILITY_RE.match(value) else None
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def _plain_params(cls, value: Any) -> Any:
+        """Scalars only, bounded. The capability's manifest validates the values."""
+        if not isinstance(value, dict):
+            return None
+        clean: dict[str, Any] = {}
+        for key, val in list(value.items())[:MAX_INTENT_PARAMS]:
+            if isinstance(val, bool | int | float) or (isinstance(val, str) and len(val) <= 200):
+                clean[str(key)[:64]] = val
+        return clean or None
 
     @field_validator("package", mode="before")
     @classmethod
@@ -67,7 +94,11 @@ Pick exactly one action:
 - generate_report: summary or report of current state
 - status: status of running or recent patch jobs
 - package_query: which version of a package is installed on the hosts, or whether it is installed
+- capability: use one of the extra capabilities listed below (run it, or ask about its results)
 - ask_question: anything else (how-to, explanations)
+
+Extra capabilities (choose "capability" only for these, by exact name):
+{capabilities}
 
 Known inventory groups and hosts: {known}
 
@@ -78,10 +109,15 @@ Also extract:
   "openssh-server"); "*" is allowed as a wildcard. null otherwise
 - live: true only if the user wants current data checked on the hosts now ("right now",
   "live", "ahora", "actualizado"), otherwise false
+- capability: for action capability, the capability name from the list. null otherwise
+- params: for action capability, an object with only the params the user asked for. null otherwise
+- run: for action capability, true if the user wants it run or launched now; false if they ask
+  about its latest results
 
 Reply with one JSON object and nothing else, for example:
 {{"action": "check_updates", "target_hosts": null,
- "security_only": false, "dry_run": false, "no_reboot": false, "package": null, "live": false}}
+ "security_only": false, "dry_run": false, "no_reboot": false, "package": null, "live": false,
+ "capability": null, "params": null, "run": false}}
 
 User request:
 <<<
@@ -192,18 +228,42 @@ _KEYWORDS: list[tuple[str, str]] = [
 ]
 
 
-def keyword_intent(message: str, known_names: set[str]) -> Intent:
+_APPLY_RE = re.compile(_KEYWORDS[1][0])
+_RUN_RE = re.compile(r"\b(run|launch|execute|start|trigger|now|lanza|lanzar|ejecuta|ejecutar|arranca|"
+                     r"haz|ahora)\b")
+
+
+def capability_from_text(low: str, capabilities: list[tuple[str, list[str]]]) -> str | None:
+    """Capability whose name or one of its keywords appears in the (lowercase) message."""
+    for name, keywords in capabilities:
+        for word in [name, name.replace("_", " "), *keywords]:
+            if re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", low):
+                return name
+    return None
+
+
+def keyword_intent(
+    message: str, known_names: set[str], capabilities: list[tuple[str, list[str]]] | None = None
+) -> Intent:
     """Deterministic fallback used when the LLM is unavailable."""
     low = message.lower()
     action = "ask_question"
     package = package_from_text(low)
+    capability = None
     if package:
         action = "package_query"
     else:
-        for pattern, name in _KEYWORDS:
-            if re.search(pattern, low):
-                action = name
-                break
+        # An explicit patching verb wins over a capability keyword: "apply
+        # patches on the docker hosts" is about patching.
+        if not _APPLY_RE.search(low):
+            capability = capability_from_text(low, capabilities or [])
+        if capability:
+            action = "capability"
+        else:
+            for pattern, name in _KEYWORDS:
+                if re.search(pattern, low):
+                    action = name
+                    break
     target = next(
         (n for n in sorted(known_names, key=len, reverse=True)
          if re.search(rf"(?<![\w-]){re.escape(n.lower())}(?![\w-])", low)),
@@ -217,4 +277,6 @@ def keyword_intent(message: str, known_names: set[str]) -> Intent:
         no_reboot=bool(re.search(r"no[ -]reboot|without reboot|don'?t reboot|prevent reboot", low)),
         package=package,
         live=bool(package) and wants_live(low),
+        capability=capability,
+        run=bool(capability) and bool(_RUN_RE.search(low)),
     )

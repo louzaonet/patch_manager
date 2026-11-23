@@ -62,6 +62,8 @@ install -d -o semaphore -g patchreports -m 2775 "$REPORTS_DIR" "$REPORTS_DIR/hos
 install -d -o semaphore -g semaphore -m 0750 "$SEM_HOME" "$SEM_HOME/tmp"
 install -d -o semaphore -g semaphore -m 0700 "$SEM_HOME/.ssh"
 install -d -o root -g patchai -m 0750 /etc/patch-manager
+# Capability manifests (see config/capabilities.d.example/): root-owned, read by patch-ai.
+install -d -o root -g patchai -m 0750 /etc/patch-manager/capabilities.d
 install -d -o root -g semaphore -m 0750 /etc/semaphore
 
 # Repository readable by both services; secrets in config/ are not used here.

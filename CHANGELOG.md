@@ -1,5 +1,25 @@
 # Registro de cambios
 
+## 1.1.0 (2026-11-23)
+
+### Novedades
+
+- Capacidades: la IA puede usar playbooks nuevos sin cambiar el código. Cada uno se declara con un manifiesto YAML en `CAPABILITIES_PATH` (por defecto `/etc/patch-manager/capabilities.d`) que indica la plantilla de Semaphore, si es de solo lectura o cambia algo (`risk: read_only | changes`), el grupo de hosts al que puede apuntar (`limit_group`, obligatorio con `changes`), los parámetros que la IA puede dar (`bool`, `int` con mínimo y máximo, `enum`, `string` con patrón obligatorio) y dónde deja sus informes por host (`reports.path`, con `{host}`). Las de solo lectura se lanzan al pedirlas y, con `run.wait: true`, la respuesta usa los informes recién escritos. Las de tipo `changes` solo crean un plan que alguien tiene que aprobar, como los parches, y el panel lo muestra con la plantilla, el alcance y los valores. Si no se pide que se lance, la IA responde con los últimos informes. Con `include_in_analysis: true` esos informes entran en el análisis programado y en **Analyze risk**. Sin LLM se eligen por las palabras de `keywords`. `GET /api/capabilities` lista las cargadas y las rechazadas con el motivo, y `POST /api/capabilities/reload` las vuelve a leer. Ejemplo comentado en `config/capabilities.d.example/docker_check.yml`; documentación en la sección 21 de la wiki.
+- `playbooks/docker_check.yml`: dice qué proyectos de Docker Compose de `docker_hosts` tienen imagen nueva en su registro comparando digests con `docker buildx imagetools`, sin descargar ni reiniciar nada. Revisa los mismos proyectos que `docker_update.yml` (`docker_compose_projects`) y deja `reports/docker-checks/<host>.json`. Las imágenes fijadas con `@sha256` salen como `pinned`. Es la capacidad de ejemplo.
+- `install.sh` crea `/etc/patch-manager/capabilities.d` (`root:patchai 0750`). En Docker hay una línea comentada en `docker/docker-compose.yml` para montarlo en el contenedor de IA.
+
+### Seguridad
+
+- El modelo solo elige una capacidad cargada, el alcance y valores de parámetros; la plantilla, el grupo, la ruta de informes y los parámetros permitidos salen del manifiesto. Un parámetro desconocido se descarta con un aviso y uno con un valor no válido impide la ejecución. No se aceptan parámetros que empiecen por `ansible_` ni variables mágicas de Ansible (`hostvars`, `groups`, `playbook_dir`...), porque como variables extra podrían cambiar el intérprete o la shell que se usa en los hosts.
+- Un manifiesto se rechaza si el fichero o el directorio se pueden escribir por el grupo u otros, si es un enlace simbólico o si su dueño no es root ni el usuario del servicio. Así el servicio no puede añadirse capacidades a sí mismo.
+- Los informes solo se leen dentro de `REPORTS_PATH`, con un tamaño máximo por fichero (`reports.max_bytes`), y llegan al modelo como datos de los hosts, con la instrucción de ignorar lo que parezcan órdenes.
+- Al aprobar el plan de una capacidad se vuelve a leer el manifiesto: si se ha borrado, si apunta a otra plantilla u otro grupo, o si los parámetros guardados ya no son válidos, el plan falla en vez de ejecutar otra cosa.
+
+### Pruebas
+
+- 37 tests nuevos (202 en total): carga y rechazo de manifiestos (nombres, parámetros reservados, rutas con `..` o absolutas, permisos, enlaces, duplicados, `changes` sin grupo), validación de parámetros, intención con y sin LLM, respuesta desde informes, lanzamiento con Semaphore simulado, alcance fuera del grupo, plan y aprobación, plan con el manifiesto cambiado, informes en el análisis y la API. ruff y ansible-lint (perfil production, sin conexión) sin avisos en lo nuevo.
+- `docker_check.yml` ejecutado contra un Docker 29 local sin acceso a registros: imagen fijada por digest, imagen que no se puede consultar y directorio inexistente, con el informe JSON y el host en rojo. La misma comparación de digests se probó a mano en cuatro hosts con Compose 5.8 y buildx 0.39 contra GHCR y Docker Hub, donde encontró dos imágenes nuevas que después actualizó `docker_update.yml`.
+
 ## 1.0.4 (2026-11-22)
 
 ### Novedades

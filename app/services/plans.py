@@ -10,6 +10,13 @@ anything an LLM says at approval time.
 
 Plans live in memory and expire after PLAN_TTL_MINUTES. Restarting the
 service drops pending plans, which is the safe failure mode.
+
+Two kinds of plan:
+- "patch": the Apply Patches template, built by build_patch_plan.
+- "capability": a manifest with risk: changes (app/services/capabilities.py).
+  The template, limit and extra vars are fixed when the plan is created. On
+  approval the manifest is looked up again: if it was removed, or now points
+  at another template, the plan fails instead of running something else.
 """
 
 from __future__ import annotations
@@ -49,6 +56,10 @@ class PendingPlan:
     semaphore_project_id: int | None = None
     semaphore_task_id: int | None = None
     error: str | None = None
+    kind: str = "patch"  # patch | capability
+    capability: str | None = None
+    template: str | None = None  # capability plans: Semaphore template name
+    capability_vars: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -61,7 +72,12 @@ class PendingPlan:
         inventory's own policy (patch_reboot_allowed: false in
         group_vars/<group>.yml). The per-host veto patch_reboot_blocked is
         honoured by the playbook either way.
+
+        Capability plans send exactly the vars validated against the manifest
+        when the plan was created.
         """
+        if self.kind == "capability":
+            return dict(self.capability_vars)
         extra = {
             "patch_security_only": str(self.security_only).lower(),
             "patch_dry_run": str(self.dry_run).lower(),
@@ -138,6 +154,53 @@ class PlanStore:
                    dry_run=pending.dry_run, no_reboot=pending.no_reboot)
         return pending
 
+    async def create_capability(
+        self,
+        capability: Any,  # app.services.capabilities.Capability
+        extra_vars: dict[str, Any],
+        limit: str | None,
+        hosts: list[str],
+        requested_by: str,
+        source: str,
+        request_text: str,
+    ) -> PendingPlan:
+        ttl = get_settings().plan_ttl_minutes * 60
+        now = time.time()
+        pending = PendingPlan(
+            id=secrets.token_hex(6),
+            created_at=now,
+            expires_at=now + ttl,
+            requested_by=requested_by,
+            source=source,
+            request_text=request_text[:500],
+            limit=limit,
+            security_only=False,
+            dry_run=False,
+            no_reboot=False,
+            kind="capability",
+            capability=capability.name,
+            template=capability.template,
+            capability_vars=dict(extra_vars),
+            summary={
+                "kind": "capability",
+                "capability": capability.name,
+                "description": capability.description,
+                "template": capability.template,
+                "limit_group": capability.limit_group,
+                "limit": limit,
+                "total_hosts": len(hosts),
+                "hosts": hosts,
+                "vars": dict(extra_vars),
+            },
+        )
+        async with self._lock:
+            self._expire()
+            self._plans[pending.id] = pending
+        audit.info("plan_created", plan_id=pending.id, by=requested_by, source=source, kind="capability",
+                   capability=capability.name, template=capability.template, limit=limit,
+                   extra_vars=extra_vars)
+        return pending
+
     async def get(self, plan_id: str) -> PendingPlan:
         async with self._lock:
             self._expire()
@@ -179,20 +242,22 @@ class PlanStore:
         settings = get_settings()
         client = SemaphoreClient()
         try:
+            if plan.kind == "capability":
+                template_name = _check_capability_still_valid(plan)
+                message = f"Plan {plan.id} ({plan.capability}) approved by {by}"
+            else:
+                template_name = settings.semaphore_template_apply
+                message = f"Patch plan {plan.id} approved by {by}"
             project_id = await client.resolve_project_id()
-            template = await client.find_template_by_name(
-                project_id, settings.semaphore_template_apply
-            )
+            template = await client.find_template_by_name(project_id, template_name)
             if not template:
-                raise SemaphoreError(
-                    f"Template '{settings.semaphore_template_apply}' not found in Semaphore"
-                )
+                raise SemaphoreError(f"Template '{template_name}' not found in Semaphore")
             result = await client.run_template(
                 project_id=project_id,
                 template_id=int(template["id"]),
                 extra_vars=plan.extra_vars(),
                 limit=plan.limit,
-                message=f"Patch plan {plan.id} approved by {by}",
+                message=message,
             )
             plan.semaphore_project_id = project_id
             plan.semaphore_task_id = int(result.get("id")) if result and result.get("id") else None
@@ -204,6 +269,25 @@ class PlanStore:
                 logger.exception("plan_execution_error", plan_id=plan_id)
             audit.error("plan_failed", plan_id=plan_id, error=plan.error)
         return plan
+
+
+def _check_capability_still_valid(plan: PendingPlan) -> str:
+    """Template to run for a capability plan, after checking the manifest again."""
+    from app.services.capabilities import CapabilityError, get_registry
+
+    cap = get_registry().get(plan.capability)
+    if cap is None:
+        raise CapabilityError(f"capability '{plan.capability}' is no longer loaded")
+    if (cap.risk != "changes" or cap.template != plan.template
+            or cap.limit_group != plan.summary.get("limit_group")):
+        raise CapabilityError(f"capability '{plan.capability}' changed since the plan was created; "
+                              "ask again")
+    # The stored vars must still pass the current manifest.
+    checked, _ = cap.validate_params(plan.capability_vars)
+    if checked != plan.capability_vars:
+        raise CapabilityError(f"parameters of '{plan.capability}' changed since the plan was created; "
+                              "ask again")
+    return cap.template
 
 
 plan_store = PlanStore()

@@ -1,0 +1,60 @@
+# Capability manifest: lets the AI run playbooks/docker_check.yml and read its reports.
+#
+# Install:
+#   1. Semaphore: create a template named exactly "Docker Check" for
+#      playbooks/docker_check.yml and enable "allow overriding the limit"
+#      (needed because limit_group is set).
+#   2. sudo install -d -o root -g patchai -m 0750 /etc/patch-manager/capabilities.d
+#      sudo install -o root -g patchai -m 0640 docker_check.yml /etc/patch-manager/capabilities.d/
+#   3. Reload: dashboard API POST /api/capabilities/reload, or restart patch-ai.
+#      GET /api/capabilities lists what was loaded and why a file was rejected.
+#
+# The file and the directory must not be writable by group or others, and must
+# be owned by root (or the service user). Symlinks are not followed.
+
+# Unique name: lowercase letters, digits and _. The AI refers to it by this name.
+name: docker_check
+
+# What it does. Goes into the AI prompt, so keep it short and precise.
+description: >-
+  Checks which Docker Compose projects on the docker hosts have a newer image in
+  their registry. Downloads and restarts nothing.
+
+# Exact name of the Semaphore template that runs the playbook.
+template: Docker Check
+
+# read_only: runs straight away when asked.
+# changes:   only creates a plan; a person approves it before anything runs.
+risk: read_only
+
+# Inventory group the capability may target. A limit outside it is refused.
+# Without limit_group no limit is ever sent (the template runs on its own hosts).
+limit_group: docker_hosts
+
+# Extra vars the AI may set. Types: bool, int (min/max), enum (values),
+# string (pattern, full match). Names starting with ansible_ are refused.
+# Anything not listed here is dropped. This playbook needs none; for example:
+# params:
+#   docker_check_projects_only:
+#     type: bool
+#     description: only report projects with updates
+#     default: false
+params: {}
+
+# Read-only runs: wait for the task (up to timeout seconds) and answer from
+# the fresh reports. wait: false just reports the Semaphore task number.
+run:
+  wait: true
+  timeout: 300
+
+# Per-host JSON reports, relative to REPORTS_PATH, with {host}.
+reports:
+  path: docker-checks/{host}.json
+  max_age_hours: 192   # older reports are marked stale
+  max_bytes: 65536     # bigger files are skipped
+
+# Include these reports in the scheduled analysis and the "Analyze risk" briefing.
+include_in_analysis: true
+
+# Words that select this capability when the LLM is unavailable (keyword fallback).
+keywords: [docker, docker check, imagenes docker, imágenes docker, contenedores]

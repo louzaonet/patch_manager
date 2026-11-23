@@ -123,6 +123,9 @@ services:
       # Only what the service needs; no secrets from config/ are mounted.
       - ../inventory:/opt/patch-manager/inventory:ro
       - reports:/var/lib/patch-manager/reports:ro
+      # Capabilities (manifests the AI can use). Files and directory owned by
+      # root and not writable by group/others, or they are rejected:
+      # - ./capabilities.d:/etc/patch-manager/capabilities.d:ro
     read_only: true
     tmpfs: ["/tmp"]
     security_opt: ["no-new-privileges:true"]

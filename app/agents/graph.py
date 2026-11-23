@@ -25,6 +25,10 @@ package_query goes straight from classify_intent to query_packages and then
 END: the answer is built from the package data (app/agents/packages.py), with
 no LLM involved.
 
+capability goes from classify_intent to run_capability and then END: a
+playbook declared by a manifest (app/agents/capabilities.py). Read-only ones
+run straight away; the ones that change hosts only create a plan.
+
 Execution is deliberately NOT part of the graph: plans are approved through
 /api/plans/{id}/approve (or Slack), see app/services/plans.py.
 """
@@ -33,6 +37,7 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agents.capabilities import run_capability
 from app.agents.nodes import (
     build_patch_plan,
     classify_intent,
@@ -56,6 +61,8 @@ def _route_after_classify(state: AgentState) -> str:
         return "fetch_task_status"
     if state.action == ActionType.PACKAGE_QUERY:
         return "query_packages"
+    if state.action == ActionType.CAPABILITY:
+        return "run_capability"
     return "handle_question"
 
 
@@ -75,13 +82,15 @@ def build_agent_graph() -> StateGraph:
     graph.add_node("generate_briefing", generate_briefing)
     graph.add_node("handle_question", handle_question)
     graph.add_node("query_packages", query_packages)
+    graph.add_node("run_capability", run_capability)
 
     graph.add_edge(START, "load_inventory")
     graph.add_edge("load_inventory", "classify_intent")
     graph.add_conditional_edges(
         "classify_intent",
         _route_after_classify,
-        ["enrich_cves", "score_risks", "fetch_task_status", "handle_question", "query_packages"],
+        ["enrich_cves", "score_risks", "fetch_task_status", "handle_question", "query_packages",
+         "run_capability"],
     )
     graph.add_edge("enrich_cves", "score_risks")
     graph.add_conditional_edges(
@@ -92,6 +101,7 @@ def build_agent_graph() -> StateGraph:
     graph.add_edge("generate_briefing", END)
     graph.add_edge("handle_question", END)
     graph.add_edge("query_packages", END)
+    graph.add_edge("run_capability", END)
     return graph
 
 

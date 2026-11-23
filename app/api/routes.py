@@ -30,6 +30,7 @@ from app.security import (
     verify_teams_hmac,
 )
 from app.services.auto_analysis import auto_analysis
+from app.services.capabilities import get_registry, reload_registry
 from app.services.plans import PlanNotFound, PlanStateError, plan_store
 from app.tools.inventory_reader import InventoryReader, validate_limit
 from app.tools.llm_router import get_active_models
@@ -83,10 +84,11 @@ class ChatResponse(BaseModel):
 
 def _to_response(state: AgentState) -> ChatResponse:
     risk_summary = None
-    if state.all_hosts and state.action not in (ActionType.ASK_QUESTION, ActionType.PACKAGE_QUERY):
+    if state.all_hosts and state.action not in (ActionType.ASK_QUESTION, ActionType.PACKAGE_QUERY,
+                                                ActionType.CAPABILITY):
         risk_summary = risk_rows(hosts_in_scope(state))
 
-    plan_summary = None
+    plan_summary = state.capability_plan
     if state.patch_plan:
         p = state.patch_plan
         plan_summary = {
@@ -293,6 +295,26 @@ async def task_status(task_id: int, user: Principal = Depends(require_user)) -> 
     return {k: task.get(k) for k in ("id", "status", "created", "start", "end", "message")}
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Capabilities
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/api/capabilities")
+async def list_capabilities(user: Principal = Depends(require_user)) -> dict[str, Any]:
+    """Loaded manifests and the ones that were rejected, with the reason."""
+    return get_registry().status()
+
+
+@router.post("/api/capabilities/reload")
+async def reload_capabilities(user: Principal = Depends(require_user_csrf)) -> dict[str, Any]:
+    """Read CAPABILITIES_PATH again (after adding or editing a manifest)."""
+    status = reload_registry().status()
+    audit.info("capabilities_reloaded", by=user.name,
+               names=[c["name"] for c in status["capabilities"]], rejected=len(status["errors"]))
+    return status
+
+
 @router.get("/api/inventory")
 async def inventory(user: Principal = Depends(require_user)) -> dict[str, Any]:
     by_group, hosts, groups = InventoryReader().load_all()
@@ -480,4 +502,5 @@ async def info(user: Principal = Depends(require_user)) -> dict[str, Any]:
         "kev": s.kev_enabled,
         "plan_ttl_minutes": s.plan_ttl_minutes,
         "auto_analysis": auto_analysis.status(),
+        "capabilities": [c.name for c in get_registry().all()],
     }

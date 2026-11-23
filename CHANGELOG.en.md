@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.0 (2026-11-23)
+
+### New
+
+- Capabilities: the AI can use new playbooks without code changes. Each one is declared by a YAML manifest in `CAPABILITIES_PATH` (`/etc/patch-manager/capabilities.d` by default) that gives the Semaphore template, whether it only reads or changes something (`risk: read_only | changes`), the host group it may target (`limit_group`, required with `changes`), the parameters the AI may set (`bool`, `int` with min and max, `enum`, `string` with a mandatory pattern) and where its per-host reports go (`reports.path`, with `{host}`). Read-only ones start when asked and, with `run.wait: true`, the answer uses the reports they just wrote. `changes` ones only create a plan that somebody has to approve, like patching, and the dashboard shows it with the template, scope and values. When not asked to run it, the AI answers from the latest reports. With `include_in_analysis: true` those reports go into the scheduled analysis and **Analyze risk**. Without an LLM they are picked by their `keywords`. `GET /api/capabilities` lists the loaded and rejected ones, with the reason, and `POST /api/capabilities/reload` reads them again. Commented example in `config/capabilities.d.example/docker_check.yml`; documentation in section 21 of the wiki.
+- `playbooks/docker_check.yml`: tells which Docker Compose projects of `docker_hosts` have a newer image in their registry by comparing digests with `docker buildx imagetools`, without pulling or restarting anything. It checks the same projects as `docker_update.yml` (`docker_compose_projects`) and writes `reports/docker-checks/<host>.json`. Images pinned with `@sha256` are reported as `pinned`. It is the example capability.
+- `install.sh` creates `/etc/patch-manager/capabilities.d` (`root:patchai 0750`). For Docker there is a commented line in `docker/docker-compose.yml` to mount it into the AI container.
+
+### Security
+
+- The model only picks a loaded capability, the scope and parameter values; template, group, report path and allowed parameters come from the manifest. An unknown parameter is dropped with a warning, and an invalid value stops the run. Parameters starting with `ansible_` and Ansible magic variables (`hostvars`, `groups`, `playbook_dir`...) are refused: as extra vars they could change the interpreter or the shell used on the hosts.
+- A manifest is rejected when the file or the directory is writable by group or others, when it is a symlink, or when its owner is neither root nor the service user, so the service can't add capabilities to itself.
+- Reports are only read inside `REPORTS_PATH`, with a size cap per file (`reports.max_bytes`), and reach the model as host data, with the instruction to ignore anything that looks like an order.
+- Approving a capability plan reads the manifest again: if it was removed, now points at another template or group, or the stored parameters are no longer valid, the plan fails instead of running something else.
+
+### Tests
+
+- 37 new tests (202 in total): loading and rejecting manifests (names, reserved parameters, paths with `..` or absolute, permissions, symlinks, duplicates, `changes` without a group), parameter validation, intent with and without an LLM, answers from reports, runs against a mocked Semaphore, scope outside the group, plan and approval, plan with a changed manifest, reports in the analysis and the API. ruff and ansible-lint (production profile, offline) clean on the new code.
+- `docker_check.yml` run against a local Docker 29 with no registry access: an image pinned by digest, an image that can't be queried and a missing directory, with the JSON report and the host ending red. The same digest comparison was run by hand on four hosts with Compose 5.8 and buildx 0.39 against GHCR and Docker Hub, where it found two newer images that `docker_update.yml` then updated.
+
 ## 1.0.4 (2026-11-22)
 
 ### New

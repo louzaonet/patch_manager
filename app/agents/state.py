@@ -22,6 +22,7 @@ class ActionType(StrEnum):
     ASK_QUESTION = "ask_question"
     STATUS = "status"
     PACKAGE_QUERY = "package_query"  # installed version of a package per host (read-only)
+    CAPABILITY = "capability"  # a playbook declared by a manifest (app/services/capabilities.py)
 
 
 OS_GROUPS: tuple[str, ...] = ("ubuntu_servers", "rocky_servers", "macos_servers", "windows_servers")
@@ -111,6 +112,11 @@ class AgentState:
     # Package question: name or glob, and whether to run a live query.
     package_name: str = ""
     package_live: bool = False
+    # Capability request: manifest name, raw params (validated by the node)
+    # and whether to run it now or answer from its last reports.
+    capability_name: str = ""
+    capability_params: dict[str, Any] = field(default_factory=dict)
+    capability_run: bool = False
 
     # ─── Inventory ──────────────────────────────────────────────────────
     inventory: dict[str, list[HostInfo]] = field(default_factory=dict)
@@ -126,6 +132,7 @@ class AgentState:
     patch_plan: PatchPlan | None = None
     plan_id: str | None = None
     plan_refused: str = ""  # why build_patch_plan did not create a plan
+    capability_plan: dict[str, Any] | None = None  # summary of a capability plan
     recent_tasks: list[dict[str, Any]] = field(default_factory=list)
 
     # ─── Output ─────────────────────────────────────────────────────────

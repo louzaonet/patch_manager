@@ -1,0 +1,100 @@
+---
+# docker_check.yml: which Docker Compose projects have a newer image in their
+# registry. Read-only: it compares the digest of each local image with the
+# registry's (docker buildx imagetools), so it downloads and restarts nothing.
+#
+# Checks the same projects as docker_update.yml (docker_compose_projects of
+# each host in docker_hosts) and writes reports/docker-checks/<host>.json.
+# The docker_check capability (config/capabilities.d.example/docker_check.yml)
+# lets the AI run it and read those reports.
+#
+# Needs the buildx plugin on the hosts (package docker-buildx-plugin).
+# Images pinned with @sha256 in the compose file are reported as "pinned".
+#
+#   ansible-playbook playbooks/docker_check.yml
+#   ansible-playbook playbooks/docker_check.yml --limit photos-01
+
+- name: "Check Docker images"
+  hosts: docker_hosts
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Start with an empty result
+      ansible.builtin.set_fact:
+        docker_check: []
+        docker_check_error: ""
+
+    - name: Check each project
+      block:
+        - name: Compare each image with its registry
+          ansible.builtin.script:
+            cmd: "docker-image-check.sh {{ item | quote }}"
+          loop: "{{ docker_compose_projects | default([]) }}"
+          register: docker_check_raw
+          changed_when: false
+          check_mode: false
+
+        - name: Parse the result of each image
+          ansible.builtin.set_fact:
+            docker_check: >-
+              {{ docker_check + [{
+                   'project': line.0.item,
+                   'image': line.1.split('|')[0],
+                   'status': line.1.split('|')[1] | default('error'),
+                   'detail': line.1.split('|', 2)[2] | default('')
+                 }] }}
+          loop: "{{ docker_check_raw.results | default([]) | subelements('stdout_lines') }}"
+          loop_control:
+            loop_var: line
+            label: "{{ line.1 }}"
+
+      rescue:
+        - name: Keep the error for the report
+          ansible.builtin.set_fact:
+            docker_check_error: "{{ ansible_failed_result.msg | default('check failed') | string | truncate(300) }}"
+
+- name: "Write Docker check reports"
+  hosts: docker_hosts
+  gather_facts: false
+  tasks:
+    - name: Create the report directory on the controller
+      ansible.builtin.file:
+        path: "{{ patch_report_dir }}/docker-checks"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      check_mode: false
+      vars: &controller_vars
+        ansible_become: false
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: patch_report_enabled | default(true) | bool
+
+    - name: Write the result of each host on the controller
+      ansible.builtin.copy:
+        content: "{{ docker_check_report | to_nice_json }}\n"
+        dest: "{{ patch_report_dir }}/docker-checks/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      check_mode: false
+      vars:
+        <<: *controller_vars
+        docker_check_report:
+          host: "{{ inventory_hostname }}"
+          checked_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          updates: "{{ docker_check | selectattr('status', 'equalto', 'update') | list | length }}"
+          error: "{{ docker_check_error or None }}"
+          images: "{{ docker_check }}"
+      when:
+        - patch_report_enabled | default(true) | bool
+        - docker_check is defined
+
+    - name: Fail the hosts that could not be checked
+      ansible.builtin.fail:
+        msg: >-
+          {{ docker_check_error or ('Could not check: ' ~ (docker_check | selectattr('status', 'equalto', 'error')
+             | map(attribute='image') | join(', '))) }}
+      when:
+        - docker_check is defined
+        - docker_check_error | default('') | length > 0
+          or docker_check | selectattr('status', 'equalto', 'error') | list | length > 0

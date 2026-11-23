@@ -112,12 +112,39 @@ function appendPlanCard(planId, summary) {
     const card = document.createElement('div');
     card.className = 'plan-card';
 
+    const isCapability = !!(summary && summary.kind === 'capability');
     const title = document.createElement('div');
     title.className = 'plan-title';
-    title.textContent = `Patch plan ${planId}: waiting for approval`;
+    title.textContent = isCapability
+        ? `Plan ${planId} (${summary.capability}): waiting for approval`
+        : `Patch plan ${planId}: waiting for approval`;
     card.appendChild(title);
 
-    if (summary) {
+    if (isCapability) {
+        // Built with textContent only: names and values come from manifests and requests.
+        const meta = document.createElement('div');
+        meta.className = 'plan-meta';
+        meta.textContent = `Template: ${summary.template} · Scope: ${summary.limit || 'hosts of the template'}` +
+            ` · ${summary.total_hosts} hosts`;
+        card.appendChild(meta);
+        const list = document.createElement('ul');
+        const vars = Object.entries(summary.vars || {});
+        if (!vars.length) {
+            const li = document.createElement('li');
+            li.textContent = 'No parameters';
+            list.appendChild(li);
+        }
+        vars.forEach(([k, v]) => {
+            const li = document.createElement('li');
+            li.textContent = `${k} = ${JSON.stringify(v)}`;
+            list.appendChild(li);
+        });
+        card.appendChild(list);
+        const note = document.createElement('div');
+        note.className = 'plan-meta';
+        note.textContent = 'Approving starts one Semaphore run of that template with these values.';
+        card.appendChild(note);
+    } else if (summary) {
         const flags = [];
         if (summary.security_only) flags.push('security only');
         if (summary.dry_run) flags.push('dry run');
@@ -156,7 +183,7 @@ function appendPlanCard(planId, summary) {
     status.className = 'plan-status';
 
     approve.addEventListener('click', async () => {
-        const verb = summary && summary.dry_run ? 'dry-run' : 'PATCH';
+        const verb = isCapability ? summary.capability : (summary && summary.dry_run ? 'dry-run' : 'PATCH');
         if (!window.confirm(`Run plan ${planId} (${verb}) on ${summary ? (summary.limit || 'all hosts') : 'the selected hosts'}?`)) return;
         approve.disabled = reject.disabled = true;
         status.textContent = 'Starting…';

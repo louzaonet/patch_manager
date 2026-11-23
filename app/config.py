@@ -130,6 +130,13 @@ class Settings(BaseSettings):
     reports_path: str = Field(default="/var/lib/patch-manager/reports", alias="REPORTS_PATH")
     report_max_age_hours: float = Field(default=48.0, alias="REPORT_MAX_AGE_HOURS")
 
+    # ─── Capabilities (playbooks the AI can use, declared by manifests) ─
+    # Directory of YAML manifests; see config/capabilities.d.example/.
+    # Missing directory = no capabilities.
+    capabilities_path: str = Field(
+        default="/etc/patch-manager/capabilities.d", alias="CAPABILITIES_PATH"
+    )
+
     # ─── CVE enrichment ─────────────────────────────────────────────────
     nvd_enabled: bool = Field(default=True, alias="NVD_ENABLED")
     nvd_api_key: str | None = Field(default=None, alias="NVD_API_KEY")
