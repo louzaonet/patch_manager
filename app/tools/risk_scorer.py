@@ -10,6 +10,12 @@ Inventory example:
 
 Hosts without a recent report get a low-confidence score and a factor that
 says so, instead of a made-up number.
+
+Ubuntu CVEs come from Canonical's USN OVAL data (check_updates.yml). When the
+NVD has no score for one, the CVSS factor uses the lowest score of the band
+that matches Canonical's priority (UBUNTU_PRIORITY_SCORE). CVEs fixed only
+with Ubuntu Pro are not installable without a subscription: they are listed
+as a factor and only change the score when one is in KEV.
 """
 
 from __future__ import annotations
@@ -17,6 +23,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 from app.agents.state import HostInfo
+
+PRIORITY_RANK = {"negligible": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+# Lowest CVSS of the band for each Canonical priority (critical 9.0-10, high 7.0-8.9, ...)
+UBUNTU_PRIORITY_SCORE = {"critical": 9.0, "high": 7.0, "medium": 4.0, "low": 0.1, "negligible": 0.0}
 
 
 class RiskScorer:
@@ -44,17 +54,35 @@ class RiskScorer:
         if host.security_count:
             factors.append(f"{host.security_count} pending security update(s)")
 
-        kev_score = 100.0 if host.kev_cves else 0.0
+        kev_any = host.kev_cves or host.kev_pro_only_cves
+        kev_score = 100.0 if kev_any else 0.0
         if host.kev_cves:
             shown = ", ".join(host.kev_cves[:3])
             factors.append(f"Known exploited (CISA KEV): {shown}")
+        if host.kev_pro_only_cves:
+            shown = ", ".join(host.kev_pro_only_cves[:3])
+            factors.append(f"Known exploited, fix needs Ubuntu Pro: {shown}")
+        if host.kev_unfixed_cves:
+            # Not scored: no update removes it. Flagged so it is seen first.
+            shown = ", ".join(host.kev_unfixed_cves[:3])
+            factors.append(f"Known exploited, no fix yet (review exposure): {shown}")
 
-        max_cvss = max((c.get("score", 0.0) for c in host.cve_matches), default=0.0)
+        top = max(host.cve_matches, key=lambda c: c.get("score", 0.0), default=None)
+        max_cvss = top.get("score", 0.0) if top else 0.0
         cvss_score = max_cvss * 10.0
-        if max_cvss >= 9.0:
+        if top and top.get("score_source") == "ubuntu" and max_cvss >= 7.0:
+            prio = str(top.get("severity", "")).capitalize()
+            factors.append(f"{prio}-priority Ubuntu CVE pending ({top['id']})")
+        elif max_cvss >= 9.0:
             factors.append(f"Critical CVE pending (CVSS {max_cvss})")
         elif max_cvss >= 7.0:
             factors.append(f"High-severity CVE pending (CVSS {max_cvss})")
+        if host.cve_pro_only_ids:
+            factors.append(f"{len(host.cve_pro_only_ids)} CVE(s) fixable only with Ubuntu Pro")
+        if host.kernel_not_covered:
+            factors.append("Running kernel not covered by Canonical's CVE data")
+        if host.cve_note:
+            factors.append(host.cve_note[:120])
 
         crit_score = self.CRITICALITY_SCORE.get(host.criticality, 50.0)
         if host.criticality == "high":
@@ -78,7 +106,7 @@ class RiskScorer:
             + reboot_score * w["reboot_pending"]
         )
         # A KEV hit on a host is urgent regardless of the other factors.
-        if host.kev_cves:
+        if kev_any:
             composite = max(composite, 80.0)
 
         return replace(host, risk_score=round(min(composite, 100.0), 1), risk_factors=factors)

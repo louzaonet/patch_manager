@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.0 (2026-11-26)
+
+### New
+
+- Ubuntu: Check Updates reports carry the CVEs that the pending updates fix. The controller checks each host's installed package list and running kernel against Canonical's USN OVAL data for its release (`playbooks/files/ubuntu_oval_cves.py`, standard library only). Nothing runs on or is installed on the hosts, and only the package list from the same run is used. Each release's file is downloaded only when it changed (`If-Modified-Since`) and kept compiled in `reports/oval-cache`. If the download fails, the cached copy is used and the report says so (`cve_data_warning`); with no copy, the report gets `cve_error` and Check Updates still finishes. New optional variables: `patch_ubuntu_cves`, `patch_oval_url_base` and `patch_oval_cache_dir`. The controller needs HTTPS access to `security-metadata.canonical.com`.
+- Kernel: what counts is the running kernel, not the installed one, so a fixed kernel waiting for a reboot still adds its CVEs. It is only checked on hosts that have that kernel's `linux-image` installed: an LXD container sees its host's kernel in `uname`, and those CVEs belong to the LXD host. If the release data doesn't know the running kernel (an older series left installed), the report flags it instead of calling it clean.
+- Ubuntu Pro: CVEs fixed only with Ubuntu Pro (`esm` versions) are kept apart in `cves_pro_only`. They don't raise the score unless one is in KEV, and then they count like any KEV hit.
+- CVEs with no fix yet: with `patch_ubuntu_unfixed_cves` (on by default) the CVE OVAL, 5 to 14 MB per release, is read too, and the CVEs of installed packages that have no fixed version yet are listed. The kernel is left out: its unfixed CVEs run to hundreds per flavour (153 critical and high in the 26.04 `linux-raspi` kernel in testing) and would show up in every report. The report keeps the count per priority, the critical and high ones with their package, and every id for the KEV check. They are not part of the risk score, since patching doesn't remove them. The analysis gives them their own section, KEV ones first, and the email and dashboard show them in each host's notes.
+- Severity: when the NVD has no score for an Ubuntu CVE (because of `NVD_LOOKUP_LIMIT`, or none published yet), the lowest score of the CVSS band matching Canonical's priority is used: critical 9.0, high 7.0, medium 4.0. The factor says so ("High-priority Ubuntu CVE pending"). NVD lookups go to KEV hits first, then by Canonical priority.
+- `security_without_notice`: pending security updates that no notice explains, either because they came out after Canonical generated the OVAL file or because they fix no CVE (tzdata, `-dev` packages). The model is told not to treat them as a data error.
+- Email and dashboard: number of pending CVEs and Pro-only CVEs per host, KEV with no fix, and the count of critical and high CVEs with no fix. The subject also flags KEV in Pro-only or unfixed CVEs.
+
+### Changes
+
+- The briefing prompt no longer says Ubuntu has no CVEs. It explains where they come from, what `score_source: "ubuntu"` means, and that an empty list is still normal for macOS and Windows. Unfixed CVEs go without package names: prompts still carry no package lists.
+- Ubuntu reports also carry `os_codename` and `kernel`.
+
+### Tests
+
+- 47 new tests (258 in total): version comparison against results from `dpkg --compare-versions`, a test OVAL file with packages, kernel, Pro and livepatch entries, containers, a package list from another run, download, cache, 304, an index that must be rebuilt, the size limit and network failure against a local server, report reading, scoring, prompt and email.
+- With the real jammy, noble and resolute OVAL files of 26 November and the package lists of four hosts: 3,351 version comparisons identical to `dpkg`'s. On an x86 machine, compiling the USN OVAL takes 0.7 to 2.1 s with under 60 MB of memory; the resolute CVE OVAL, 10.7 s and 59 MB, since it is read twice to keep the kernel entries out of memory. With the cache, the whole step takes under half a second.
+- `check_updates.yml` against a local Ubuntu 24.04 with the noble OVAL served locally: first run, cached run (304), offline with and without a cached copy, the option turned off and a non-HTTPS URL. ansible-lint (production profile) and `--syntax-check`.
+
 ## 1.2.1 (2026-11-24)
 
 ### Fixes

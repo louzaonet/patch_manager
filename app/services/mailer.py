@@ -43,6 +43,27 @@ _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.*)$")
 
 
+def _notes(r: dict[str, Any], sep: str) -> list[str]:
+    """The Notes column of a host row."""
+    out = []
+    if r["kev"]:
+        out.append("KEV: " + sep.join(r["kev"]))
+    if r.get("kev_pro_only"):
+        out.append("KEV (Ubuntu Pro): " + sep.join(r["kev_pro_only"]))
+    if r.get("cves"):
+        out.append(f"{r['cves']} CVE")
+    if r.get("cves_pro_only"):
+        out.append(f"{r['cves_pro_only']} CVE Ubuntu Pro")
+    if r.get("kev_unfixed"):
+        out.append("KEV, no fix: " + sep.join(r["kev_unfixed"]))
+    no_fix = [f"{r[k]} {k.split('_')[1]}" for k in ("unfixed_critical", "unfixed_high") if r.get(k)]
+    if no_fix:
+        out.append("no fix: " + sep.join(no_fix))
+    if r["reboot_required"]:
+        out.append("reboot pending")
+    return out
+
+
 def _inline(text: str) -> str:
     """Inline markup on ALREADY ESCAPED text."""
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
@@ -150,7 +171,7 @@ def build_report_email(state: AgentState, settings: Settings, now: datetime) -> 
     counts: dict[str, int] = {}
     for r in rows:
         counts[r["risk_class"]] = counts.get(r["risk_class"], 0) + 1
-    kev_hosts = [r["hostname"] for r in rows if r["kev"]]
+    kev_hosts = [r["hostname"] for r in rows if r["kev"] or r.get("kev_pro_only") or r.get("kev_unfixed")]
     stale = newest is None or newest > settings.auto_analysis_fresh_hours
 
     # ── Subject: counts and flags only, no host names ──
@@ -192,11 +213,7 @@ def build_report_email(state: AgentState, settings: Settings, now: datetime) -> 
         text_lines.append("")
     text_lines.append(f"{'Host':<20} {'Risk':>6} {'Class':<9} {'Sec/Total':>10} {'Report':>9}  Notes")
     for r in rows:
-        extra = []
-        if r["kev"]:
-            extra.append("KEV " + ",".join(r["kev"]))
-        if r["reboot_required"]:
-            extra.append("reboot pending")
+        extra = _notes(r, ",")
         text_lines.append(
             f"{r['hostname'][:20]:<20} {r['risk_score']:>6} {r['risk_class']:<9} "
             f"{str(r['security_updates']) + '/' + str(r['updates']):>10} {_age(r['report_age_hours']):>9}  "
@@ -215,11 +232,7 @@ def build_report_email(state: AgentState, settings: Settings, now: datetime) -> 
     table_rows = []
     for r in rows:
         colour = _CLASS_COLOURS.get(r["risk_class"], "#6b7280")
-        extra = []
-        if r["kev"]:
-            extra.append("KEV: " + ", ".join(r["kev"]))
-        if r["reboot_required"]:
-            extra.append("reboot pending")
+        extra = _notes(r, ", ")
         # Risk factors are left to the briefing: in the table they only
         # repeated the update counts.
         nw = f"{_TD};white-space:nowrap"

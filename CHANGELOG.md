@@ -1,5 +1,28 @@
 # Registro de cambios
 
+## 1.3.0 (2026-11-26)
+
+### Novedades
+
+- Ubuntu: los informes de Check Updates traen los CVE que corrigen las actualizaciones pendientes. El controlador cruza la lista de paquetes instalados de cada host y el kernel que está corriendo con el OVAL USN de Canonical de su versión (`playbooks/files/ubuntu_oval_cves.py`, solo biblioteca estándar). No toca los hosts ni instala nada en ellos, y solo usa la lista de paquetes de la misma ejecución. El fichero de cada versión se descarga solo si ha cambiado (`If-Modified-Since`) y se guarda compilado en `reports/oval-cache`. Si la descarga falla se usa la copia guardada y el informe lo dice (`cve_data_warning`); si no hay copia, el informe lleva `cve_error` y Check Updates termina igual. Variables nuevas, opcionales: `patch_ubuntu_cves`, `patch_oval_url_base` y `patch_oval_cache_dir`. El controlador necesita salida HTTPS a `security-metadata.canonical.com`.
+- Kernel: cuenta el que está corriendo, no el instalado, así que un kernel corregido pendiente de reinicio sigue sumando sus CVE. Solo se mira en hosts que tienen instalado el `linux-image` de ese kernel: un contenedor LXD ve el kernel de su host en `uname` y esos CVE son del host LXD. Si la versión de Ubuntu no reconoce el kernel que corre (una serie anterior que quedó instalada), el informe lo marca en lugar de darlo por limpio.
+- Ubuntu Pro: los CVE que solo corrige Ubuntu Pro (versiones `esm`) van aparte, en `cves_pro_only`. No suben la nota salvo que alguno esté en KEV, y entonces cuentan como cualquier KEV.
+- CVE sin corrección: con `patch_ubuntu_unfixed_cves` (activado por defecto) también se lee el OVAL CVE, de 5 a 14 MB por versión, y se listan los CVE de paquetes instalados que aún no tienen versión corregida. El kernel se deja fuera: sus CVE sin corrección son cientos por variante (153 críticos y altos en el `linux-raspi` de 26.04 en las pruebas) y saldrían en todos los informes. Se guardan el recuento por prioridad, los críticos y altos con su paquete, y todos los identificadores para cruzarlos con KEV. No entran en la nota de riesgo, porque parchear no los quita. El análisis los pone en una sección propia, los que están en KEV primero, y el correo y el panel los muestran en las notas de cada host.
+- Gravedad: cuando NVD no tiene nota de un CVE de Ubuntu (por `NVD_LOOKUP_LIMIT` o porque no la ha publicado), se usa la nota más baja del tramo de CVSS que corresponde a la prioridad de Canonical: crítica 9.0, alta 7.0, media 4.0. El factor lo dice ("High-priority Ubuntu CVE pending"). Las consultas a NVD se hacen primero para los KEV y después por prioridad de Canonical.
+- `security_without_notice`: actualizaciones de seguridad pendientes que ningún aviso explica, porque salieron después de que Canonical generara el OVAL o porque no corrigen ningún CVE (tzdata, paquetes `-dev`). El modelo tiene instrucciones de no tratarlas como un error de datos.
+- Correo y panel: número de CVE pendientes y de CVE solo con Pro por host, KEV sin corrección y recuento de CVE críticos y altos sin corrección. El asunto avisa también de KEV en CVE solo con Pro o sin corrección.
+
+### Cambios
+
+- El prompt del informe ya no dice que en Ubuntu no hay CVE. Explica de dónde salen, qué es `score_source: "ubuntu"` y que en macOS y Windows una lista vacía sigue siendo lo normal. Los CVE sin corrección van sin nombres de paquete: los prompts siguen sin llevar listas de paquetes.
+- Los informes de Ubuntu llevan además `os_codename` y `kernel`.
+
+### Pruebas
+
+- 47 tests nuevos (258 en total): la comparación de versiones contra resultados de `dpkg --compare-versions`, un OVAL de prueba con paquetes, kernel, Pro y livepatch, contenedores, lista de paquetes de otra ejecución, descarga, caché, 304, índice que hay que recompilar, límite de tamaño y fallo de red con un servidor local, lectura de los informes, puntuación, prompt y correo.
+- Con los OVAL reales de jammy, noble y resolute del 26 de noviembre y las listas de paquetes de cuatro hosts: 3.351 comparaciones de versiones idénticas a las de `dpkg`. En un equipo x86, compilar el OVAL USN tarda de 0,7 a 2,1 s, con menos de 60 MB de memoria; el OVAL CVE de resolute, 10,7 s y 59 MB, porque se lee dos veces para no cargar en memoria las entradas del kernel. Con la caché, el paso entero tarda menos de medio segundo.
+- `check_updates.yml` contra un Ubuntu 24.04 local con el OVAL de noble servido en local: primera ejecución, ejecución con caché (304), sin red con caché y sin ella, la opción desactivada y una URL no HTTPS. ansible-lint (perfil production) y `--syntax-check`.
+
 ## 1.2.1 (2026-11-24)
 
 ### Correcciones

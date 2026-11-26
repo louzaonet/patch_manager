@@ -8,7 +8,7 @@ Update detection, patching and reporting for Ubuntu, Rocky Linux, macOS and Wind
 |-------|-----------|---------|
 | Automation | Ansible playbooks | detect, install, reboot, per-host JSON reports, email |
 | Web management | Semaphore UI | run and schedule playbooks, key store, API |
-| AI | LangGraph + FastAPI (`/ai/`) | KEV/NVD enrichment, risk scoring, briefings, chat, package versions per host, patch plans with approval, your own playbooks declared by a manifest |
+| AI | LangGraph + FastAPI (`/ai/`) | Ubuntu CVEs from Canonical's OVAL data (pending, Pro-only and unfixed), KEV/NVD enrichment, risk scoring, briefings, chat, package versions per host, patch plans with approval, your own playbooks declared by a manifest |
 | Notifications | Email, Slack, Teams | HTML reports from the playbooks, scheduled AI risk report, `/patch` slash command, Workflows cards |
 
 ```

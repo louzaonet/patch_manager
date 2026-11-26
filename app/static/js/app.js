@@ -390,6 +390,18 @@ function toggleRiskDetail(card, host, cls) {
             : `${host.security_updates} security / ${host.updates} total`,
     ];
     if (host.kev && host.kev.length) parts.push(`KEV: ${host.kev.join(', ')}`);
+    if (host.kev_pro_only && host.kev_pro_only.length) {
+        parts.push(`KEV (Ubuntu Pro): ${host.kev_pro_only.join(', ')}`);
+    }
+    if (host.cves) parts.push(`${host.cves} CVE`);
+    if (host.cves_pro_only) parts.push(`${host.cves_pro_only} CVE Ubuntu Pro`);
+    if (host.kev_unfixed && host.kev_unfixed.length) {
+        parts.push(`KEV, no fix: ${host.kev_unfixed.join(', ')}`);
+    }
+    const noFix = [];
+    if (host.unfixed_critical) noFix.push(`${host.unfixed_critical} critical`);
+    if (host.unfixed_high) noFix.push(`${host.unfixed_high} high`);
+    if (noFix.length) parts.push(`no fix: ${noFix.join(', ')}`);
     if (host.reboot_required) parts.push('reboot pending');
     if (host.report_age_hours != null) parts.push(`report ${formatAge(host.report_age_hours)} old`);
     const factors = (host.risk_factors || []).join('; ');

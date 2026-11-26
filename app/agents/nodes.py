@@ -27,7 +27,7 @@ from app.tools.cve_scanner import CVEScanner
 from app.tools.inventory_reader import InventoryReader, validate_limit
 from app.tools.llm_router import get_llm, message_text
 from app.tools.report_reader import ReportReader
-from app.tools.risk_scorer import RiskScorer
+from app.tools.risk_scorer import PRIORITY_RANK, UBUNTU_PRIORITY_SCORE, RiskScorer
 from app.tools.semaphore_client import SemaphoreClient, SemaphoreError
 
 logger = structlog.get_logger()
@@ -210,18 +210,34 @@ async def enrich_cves(state: AgentState) -> dict[str, Any]:
     scanner = CVEScanner()
     hosts = hosts_in_scope(state)
     all_ids = sorted({cve for h in hosts for cve in h.cve_ids})
+    priority: dict[str, str] = {}
+    for h in hosts:
+        for cve_id, prio in h.cve_priority.items():
+            if PRIORITY_RANK.get(prio, 0) > PRIORITY_RANK.get(priority.get(cve_id, ""), -1):
+                priority[cve_id] = prio
 
     kev = await scanner.get_kev_ids()
-    # Look up KEV hits first: they matter most if the budget runs out.
-    ordered = sorted(all_ids, key=lambda c: (c not in kev, c))
+    # Look up KEV hits first, then the highest Ubuntu priority: they matter
+    # most if the NVD budget runs out (an Ubuntu kernel notice lists >100 CVEs).
+    ordered = sorted(all_ids, key=lambda c: (c not in kev, -PRIORITY_RANK.get(priority.get(c, ""), -1), c))
     details = await scanner.lookup_cves(ordered) if ordered else {}
 
     matched: dict[str, dict[str, Any]] = {}
     for host in hosts:
         host.kev_cves = [c for c in host.cve_ids if c in kev]
+        # Fixed only with Ubuntu Pro: KEV still counts (see RiskScorer), CVSS doesn't.
+        host.kev_pro_only_cves = [c for c in host.cve_pro_only_ids if c in kev]
+        # No fix yet: patching can't remove them, so they stay out of the score.
+        host.kev_unfixed_cves = [c for c in host.unfixed_ids if c in kev]
         host.cve_matches = []
         for cve_id in host.cve_ids:
             info = dict(details.get(cve_id) or {"id": cve_id, "score": 0.0, "severity": "UNKNOWN"})
+            if not info.get("score") and priority.get(cve_id):
+                # No NVD score (not looked up yet, or none published): use the
+                # lowest CVSS of the band matching Canonical's priority.
+                info["score"] = UBUNTU_PRIORITY_SCORE.get(priority[cve_id], 0.0)
+                info["severity"] = priority[cve_id].upper()
+                info["score_source"] = "ubuntu"
             info["known_exploited"] = cve_id in kev
             host.cve_matches.append(info)
             matched[cve_id] = info
@@ -351,11 +367,54 @@ def risk_rows(hosts: list[HostInfo], limit: int = 200) -> list[dict[str, Any]]:
             "updates": h.update_count,
             "security_updates": h.security_count,
             "kev": h.kev_cves[:5],
+            "kev_pro_only": h.kev_pro_only_cves[:5],
+            "cves": len(h.cve_ids),
+            "cves_pro_only": len(h.cve_pro_only_ids),
+            "kev_unfixed": h.kev_unfixed_cves[:5],
+            "unfixed_critical": h.unfixed_counts.get("critical", 0),
+            "unfixed_high": h.unfixed_counts.get("high", 0),
             "reboot_required": h.reboot_required,
             "report_age_hours": h.report_age_hours,
         }
         for h in sorted(hosts, key=lambda x: x.risk_score, reverse=True)[:limit]
     ]
+
+
+MAX_UNFIXED_IN_PROMPT = 30
+
+
+def _unfixed_summary(hosts: list[HostInfo]) -> list[dict[str, Any]]:
+    """CVEs without a fix across hosts: KEV first, then critical, then high.
+
+    Package names stay out: prompts carry no package lists (wiki, section 24).
+    """
+    rows: dict[str, dict[str, Any]] = {}
+
+    def row(cve: str) -> dict[str, Any]:
+        # A KEV CVE missing from unfixed_top is below high (or past its cap).
+        return rows.setdefault(cve, {"cve": cve, "kev": False, "priority": "below high", "hosts": []})
+
+    for h in hosts:
+        for cve in h.kev_unfixed_cves:          # any priority: KEV is what matters
+            row(cve)["kev"] = True
+        for item in h.unfixed_top:              # critical and high
+            row(item["cve"])["priority"] = item["priority"]
+        for cve in {*h.kev_unfixed_cves, *(i["cve"] for i in h.unfixed_top)}:
+            if h.hostname not in rows[cve]["hosts"]:
+                rows[cve]["hosts"].append(h.hostname)
+    order = {"critical": 0, "high": 1}
+    out = sorted(rows.values(), key=lambda r: (not r["kev"], order.get(r["priority"], 2), r["cve"]))
+    return [{**r, "hosts": r["hosts"][:10]} for r in out[:MAX_UNFIXED_IN_PROMPT]]
+
+
+def _cve_data(h: HostInfo) -> str | None:
+    """Where an Ubuntu host's CVE ids come from, for the prompt."""
+    if h.os_group != "ubuntu_servers":
+        return None
+    if h.cve_source:
+        text = f"Canonical USN data of {h.cve_data_at or 'unknown date'}"
+        return f"{text}; {h.cve_note}" if h.cve_note else text
+    return h.cve_note or "none (report from before CVE support)"
 
 
 def _host_summary(hosts: list[HostInfo]) -> list[dict[str, Any]]:
@@ -371,9 +430,17 @@ def _host_summary(hosts: list[HostInfo]) -> list[dict[str, Any]]:
             "updates": h.update_count,
             "security_updates": h.security_count,
             "kev": h.kev_cves[:3],
+            "cves": len(h.cve_ids),
+            **({"cves_pro_only": len(h.cve_pro_only_ids), "kev_pro_only": h.kev_pro_only_cves[:3],
+                "security_updates_without_notice": len(h.security_without_notice),
+                "cve_data": _cve_data(h),
+                **({"unfixed": {p: n for p, n in h.unfixed_counts.items() if n},
+                    "kev_unfixed": h.kev_unfixed_cves[:3]} if h.unfixed_counts else {}),
+                **({"unfixed_data": h.unfixed_note} if h.unfixed_note else {}),
+                } if h.os_group == "ubuntu_servers" else {}),
             "reboot_pending": h.reboot_required,
             "report_age_h": h.report_age_hours,
-            "factors": h.risk_factors[:3],
+            "factors": h.risk_factors[:4],
         }
         for h in hosts[:MAX_HOSTS_IN_PROMPT]
     ]
@@ -407,6 +474,9 @@ def fallback_briefing(state: AgentState, reason: str = "") -> str:
     kev_hosts = [h.hostname for h in hosts if h.kev_cves]
     if kev_hosts:
         lines.append(f"**Known exploited CVEs pending on:** {', '.join(kev_hosts)}")
+    kev_pro = [h.hostname for h in hosts if h.kev_pro_only_cves]
+    if kev_pro:
+        lines.append(f"**Known exploited CVEs fixable only with Ubuntu Pro on:** {', '.join(kev_pro)}")
     lines.append("")
     for h in sorted(hosts, key=lambda x: x.risk_score, reverse=True)[:15]:
         factors = "; ".join(h.risk_factors[:2]) or "no notable factors"
@@ -460,7 +530,8 @@ async def generate_briefing(state: AgentState) -> dict[str, Any]:
     hosts = sorted(hosts_in_scope(state), key=lambda h: h.risk_score, reverse=True)
     cves = [
         {"id": c["id"], "cvss": c.get("score"), "severity": c.get("severity"),
-         "known_exploited": c.get("known_exploited", False)}
+         "known_exploited": c.get("known_exploited", False),
+         **({"score_source": "ubuntu"} if c.get("score_source") == "ubuntu" else {})}
         for c in state.cve_data[:MAX_CVES_IN_PROMPT]
     ]
     context = [{"id": c["id"], "cvss": c["score"], "os_group": c["os_group"]}
@@ -484,11 +555,30 @@ async def generate_briefing(state: AgentState) -> dict[str, Any]:
     # "none"/"n/a": the model used to report those as data gaps every time.
     sections = [
         f"HOSTS ({len(hosts)}; highest risk first):\n{json.dumps(_host_summary(hosts), indent=1)}",
-        "CVES REPORTED BY HOST PACKAGE ADVISORIES:\n"
+        "CVES PENDING ON THE HOSTS (highest first):\n"
         + (json.dumps(cves, indent=1) if cves else "none reported")
-        + "\n(Only Rocky Linux reports carry CVE ids. For Ubuntu, macOS and Windows hosts an empty "
-        "list is normal and NOT a data gap; their risk comes from security update counts and KEV.)",
+        + "\n(Rocky hosts report CVE ids from their dnf advisories. Ubuntu hosts get them from "
+        "Canonical's USN data (cve_data): the CVEs fixed by their pending updates, plus those of the "
+        "running kernel when it is older than the fixed one (kernel update pending, or installed and "
+        "not rebooted yet). cvss is the NVD score; with "
+        "score_source \"ubuntu\" the NVD had none and it is the lowest CVSS of the band for "
+        "Canonical's priority. cves_pro_only are fixed only with Ubuntu Pro (not installable without "
+        "a subscription): report them apart, they do not raise the risk unless in kev_pro_only. "
+        "security_updates_without_notice are pending security updates newer than Canonical's data or "
+        "with no CVE (tzdata, -dev packages): not a data error. macOS and Windows reports carry no CVE "
+        "ids; for them an empty list is normal and NOT a data gap.)",
     ]
+    unfixed = _unfixed_summary(hosts)
+    if unfixed:
+        sections.append(
+            "CVES WITHOUT A FIX YET (Canonical's CVE data: the package is installed and no fixed "
+            "version exists; patching does NOT remove them and they are not in the risk score; the "
+            "kernel is not included). Known exploited (kev) first, then critical and high:\n"
+            + json.dumps(unfixed, separators=(",", ":"))
+            + "\nIf any, add a short section 'Vulnerabilities without a fix': name KEV ones first, "
+            "then the critical/high ones per host, and say a patch does not exist yet. Do not invent "
+            "mitigations; only say exposure should be reviewed."
+        )
     if context:
         sections.append(
             "RECENT CRITICAL CVES FOR THESE OS FAMILIES (context only, not confirmed on any host):\n"

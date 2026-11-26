@@ -46,6 +46,19 @@ class HostInfo:
     pending_updates: list[str] = field(default_factory=list)
     security_updates: list[str] = field(default_factory=list)
     cve_ids: list[str] = field(default_factory=list)
+    # Ubuntu: CVE data from Canonical's USN OVAL (check_updates.yml)
+    cve_source: str = ""               # "ubuntu-usn-oval"; empty = no CVE data for this host
+    cve_data_at: str = ""              # when Canonical generated that data
+    cve_note: str = ""                 # why there is no data, or why it is not fresh
+    cve_priority: dict[str, str] = field(default_factory=dict)   # CVE -> Ubuntu priority
+    cve_pro_only_ids: list[str] = field(default_factory=list)    # fixed only with Ubuntu Pro
+    security_without_notice: list[str] = field(default_factory=list)
+    kernel_not_covered: bool = False
+    # Package CVEs with no fix yet (CVE OVAL): listed apart, never in the risk score
+    unfixed_counts: dict[str, int] = field(default_factory=dict)       # priority -> count
+    unfixed_top: list[dict[str, Any]] = field(default_factory=list)    # critical and high
+    unfixed_ids: list[str] = field(default_factory=list)               # all, for the KEV check
+    unfixed_note: str = ""
     reboot_required: bool = False
     last_patch_status: str = ""
     last_patch_at: str = ""
@@ -53,6 +66,8 @@ class HostInfo:
     # Filled by enrichment and scoring
     cve_matches: list[dict[str, Any]] = field(default_factory=list)
     kev_cves: list[str] = field(default_factory=list)
+    kev_pro_only_cves: list[str] = field(default_factory=list)
+    kev_unfixed_cves: list[str] = field(default_factory=list)
     risk_score: float = 0.0
     risk_factors: list[str] = field(default_factory=list)
 

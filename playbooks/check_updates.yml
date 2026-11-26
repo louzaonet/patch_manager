@@ -7,6 +7,10 @@
 # Rocky hosts also get their installed package list in packages/<host>.json
 # (turn off with patch_collect_packages: false).
 #
+# Ubuntu reports carry the CVEs their pending updates fix: the controller
+# checks the package list and the running kernel against Canonical's USN OVAL
+# data (files/ubuntu_oval_cves.py; turn off with patch_ubuntu_cves: false).
+#
 #   ansible-playbook playbooks/check_updates.yml
 #   ansible-playbook playbooks/check_updates.yml --limit ubuntu_servers
 #
@@ -70,12 +74,14 @@
           host: "{{ inventory_hostname }}"
           os_group: ubuntu_servers
           os: "{{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+          os_codename: "{{ ansible_facts['distribution_release'] }}"
+          kernel: "{{ ansible_facts['kernel'] }}"   # running kernel (uname -r)
           checked_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
           update_count: "{{ upgradable | length }}"
           security_count: "{{ security | length }}"
           packages: "{{ upgradable | map('regex_replace', '/.*$', '') | list }}"
           security_packages: "{{ security | map('regex_replace', '/.*$', '') | list }}"
-          cves: []
+          cves: []   # filled on the controller from the OVAL data, see the last play
           reboot_required: "{{ reboot_flag.stat.exists }}"
       vars:
         upgradable: "{{ apt_upgradable.stdout_lines | select('search', '\\[upgradable from') | list }}"
@@ -254,17 +260,6 @@
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
       when: patch_report_enabled | bool
 
-    - name: Write JSON report on the controller
-      ansible.builtin.copy:
-        content: "{{ host_report | to_nice_json }}\n"
-        dest: "{{ patch_report_dir }}/hosts/{{ inventory_hostname }}.json"
-        mode: "0644"
-      delegate_to: localhost
-      vars: *controller_vars
-      when:
-        - patch_report_enabled | bool
-        - host_report is defined
-
     # Compact JSON: a host has one to two thousand packages.
     - name: Write the installed package list on the controller
       ansible.builtin.copy:
@@ -282,6 +277,72 @@
       when:
         - patch_report_enabled | bool
         - host_packages is defined
+
+    # One run for every Ubuntu host of the play, after their package lists are
+    # written. It downloads the OVAL file of each release only when it changed
+    # and never fails the play: problems end up as cve_error in the report.
+    # --unfixed also reads the CVE OVAL (5-14 MB per release) for the CVEs
+    # with no fix yet (patch_ubuntu_unfixed_cves: false to skip it).
+    - name: Find the CVEs fixed by pending Ubuntu updates (Canonical OVAL)
+      ansible.builtin.command:
+        argv: >-
+          {{ [ansible_playbook_python, playbook_dir ~ '/files/ubuntu_oval_cves.py',
+              '--cache-dir', patch_oval_cache_dir | default(patch_report_dir ~ '/oval-cache'),
+              '--packages-dir', patch_report_dir ~ '/packages',
+              '--url-base', patch_oval_url_base | default('https://security-metadata.canonical.com/oval')]
+             + (['--unfixed'] if patch_ubuntu_unfixed_cves | default(true) | bool else []) }}
+        stdin: "{{ oval_hosts | to_json }}"
+      register: oval_run
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+      vars:
+        <<: *controller_vars
+        oval_hosts: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+          {%- set r = hostvars[h].host_report | default({}) -%}
+          {%- if r.os_group | default('') == 'ubuntu_servers' -%}
+          {%- set _ = out.append({'host': h, 'codename': r.os_codename | default(''),
+                                  'kernel': r.kernel | default(''),
+                                  'checked_at': r.checked_at | default(''),
+                                  'security_packages': r.security_packages | default([])}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      when:
+        - patch_report_enabled | bool
+        - patch_ubuntu_cves | default(true) | bool
+        - oval_hosts | length > 0
+
+    - name: Write JSON report on the controller
+      ansible.builtin.copy:
+        content: "{{ host_report | combine(cve_fields) | to_nice_json }}\n"
+        dest: "{{ patch_report_dir }}/hosts/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      vars:
+        <<: *controller_vars
+        oval: >-
+          {{ oval_run.stdout | from_json
+             if (oval_run.rc | default(1)) == 0 and (oval_run.stdout | default('')).startswith('{')
+             else {} }}
+        cve_fields: >-
+          {%- if host_report.os_group | default('') != 'ubuntu_servers'
+                 or not (patch_ubuntu_cves | default(true) | bool) -%}
+          {{ {} }}
+          {%- elif inventory_hostname in (oval.hosts | default({})) -%}
+          {{ oval.hosts[inventory_hostname] }}
+          {%- else -%}
+          {{ {'cve_source': None,
+              'cve_error': (oval.errors | default({}))[inventory_hostname]
+                           | default(((oval_run.stderr | default('', true) | trim
+                                       or 'OVAL step did not run').splitlines() | last)[-300:], true)} }}
+          {%- endif -%}
+      when:
+        - patch_report_enabled | bool
+        - host_report is defined
 
     - name: Send summary email
       community.general.mail:

@@ -421,7 +421,8 @@ async def test_briefing_prompt_without_false_gaps(env, fake_llm):
     prompt = fake.prompts["generate_briefing"][0]
     assert "RECENT SEMAPHORE TASKS" not in prompt
     assert "PATCH PLAN" not in prompt
-    assert "Only Rocky Linux reports carry CVE ids" in prompt
+    assert "macOS and Windows reports carry no CVE ids" in prompt
+    assert "is normal and NOT a data gap" in prompt
     assert "newer than your training data" in prompt
 
 

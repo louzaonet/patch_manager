@@ -38,6 +38,16 @@ patch_security_only: "{{ 'security_only' in ansible_run_tags }}"
 # Written on the controller (the Semaphore host/container), one file per host.
 patch_report_dir: "{{ lookup('ansible.builtin.env', 'PATCH_REPORT_DIR', default='/var/lib/patch-manager/reports') }}"
 patch_report_enabled: true
+# Ubuntu: CVEs fixed by the pending updates, from Canonical's USN OVAL data,
+# checked on the controller (check_updates.yml). The controller needs HTTPS
+# access to the URL below; the files are cached and only downloaded when they
+# change. The playbook uses these same values when they are not set here.
+# patch_ubuntu_cves: true
+# patch_oval_url_base: https://security-metadata.canonical.com/oval
+# patch_oval_cache_dir: "{{ patch_report_dir }}/oval-cache"
+# Package CVEs with no fix yet (Canonical's CVE OVAL, 5-14 MB per release): listed
+# apart in the analysis, never in the risk score.
+# patch_ubuntu_unfixed_cves: true
 
 # ─── Maintenance window (optional) ──────────────────────────────────────────
 # Evaluated with the CONTROLLER's local clock. Windows that cross midnight
