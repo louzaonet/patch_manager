@@ -1,5 +1,16 @@
 # Registro de cambios
 
+## 1.3.1 (2026-11-26)
+
+### Correcciones
+
+- Prompt del informe: el recuento de CVE sin corrección de cada host lleva siempre `critical` y `high`, aunque sean 0. Antes los ceros se quitaban, y con hosts que solo tenían prioridades media y baja el modelo no podía decir que no había ninguno crítico ni alto.
+- El prompt explica qué es `unfixed` siempre que hay recuentos (prioridad de Canonical, paquetes instalados sin versión corregida, kernel fuera) y que los identificadores están en el informe de cada host, no en el prompt. Antes esa explicación solo iba cuando había algún KEV, crítico o alto, y el modelo pedía "obtener la lista de CVE" como si faltara un dato. Si ningún host tiene críticos ni altos, el prompt lo dice; si los hay, nombra los hosts.
+
+### Pruebas
+
+- 1 test nuevo (259 en total) con un host que solo tiene CVE sin corrección de prioridad media, baja y negligible, y el mismo host con uno crítico.
+
 ## 1.3.0 (2026-11-26)
 
 ### Novedades

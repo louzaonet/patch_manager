@@ -623,3 +623,29 @@ def test_unfixed_cves_reach_the_analysis_without_scoring(env, monkeypatch):
     assert all(set(r) == {"cve", "kev", "priority", "hosts"} for r in summary)   # no package names
     notes = mailer._notes(nodes.risk_rows([scored])[0], ", ")
     assert "KEV, no fix: CVE-2026-1006" in notes and "no fix: 1 critical, 1 high" in notes
+
+
+async def test_prompt_explains_unfixed_counts_without_critical_or_high(env, fake_llm):
+    # 1.3.1: with only medium/low counts the model got neither the zeros nor what
+    # the bands mean, and could not say "none critical or high".
+    from app.agents import nodes
+    from app.agents.state import ActionType, AgentState, HostInfo
+
+    h = HostInfo(hostname="Bluma", ip="x", os_group="ubuntu_servers", cve_source="ubuntu-usn-oval",
+                 unfixed_counts={"critical": 0, "high": 0, "medium": 696, "low": 43, "negligible": 19})
+    assert nodes._host_summary([h])[0]["unfixed"] == {"critical": 0, "high": 0, "medium": 696,
+                                                       "low": 43, "negligible": 19}
+    fake = fake_llm()
+    await nodes.generate_briefing(AgentState(user_message="x", action=ActionType.ANALYZE_RISK,
+                                             all_hosts=[h]))
+    prompt = fake.prompts["generate_briefing"][0]
+    assert "by Canonical's priority" in prompt and "not a data gap" in prompt
+    assert "No host has critical or high ones" in prompt
+    assert "CVES WITHOUT A FIX YET" not in prompt          # nothing KEV, critical or high to list
+
+    h.unfixed_counts = {"critical": 1, "high": 0, "medium": 2}
+    fake = fake_llm()
+    await nodes.generate_briefing(AgentState(user_message="x", action=ActionType.ANALYZE_RISK,
+                                             all_hosts=[h]))
+    assert "Hosts with critical or high ones: Bluma." in fake.prompts["generate_briefing"][0]
+

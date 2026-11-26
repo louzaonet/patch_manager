@@ -434,7 +434,10 @@ def _host_summary(hosts: list[HostInfo]) -> list[dict[str, Any]]:
             **({"cves_pro_only": len(h.cve_pro_only_ids), "kev_pro_only": h.kev_pro_only_cves[:3],
                 "security_updates_without_notice": len(h.security_without_notice),
                 "cve_data": _cve_data(h),
-                **({"unfixed": {p: n for p, n in h.unfixed_counts.items() if n},
+                # critical and high always go, even at 0: "none critical or high" is the
+                # answer most questions about unfixed CVEs need.
+                **({"unfixed": {p: n for p, n in h.unfixed_counts.items()
+                                if n or p in ("critical", "high")},
                     "kev_unfixed": h.kev_unfixed_cves[:3]} if h.unfixed_counts else {}),
                 **({"unfixed_data": h.unfixed_note} if h.unfixed_note else {}),
                 } if h.os_group == "ubuntu_servers" else {}),
@@ -568,6 +571,17 @@ async def generate_briefing(state: AgentState) -> dict[str, Any]:
         "with no CVE (tzdata, -dev packages): not a data error. macOS and Windows reports carry no CVE "
         "ids; for them an empty list is normal and NOT a data gap.)",
     ]
+    if any(h.unfixed_counts for h in hosts):
+        worst = [h.hostname for h in hosts
+                 if h.unfixed_counts.get("critical") or h.unfixed_counts.get("high")]
+        sections.append(
+            "\"unfixed\" (Ubuntu hosts) counts CVEs of installed packages that have no fixed version "
+            "yet, by Canonical's priority (critical, high, medium, low, negligible); the kernel is not "
+            "included. The CVE ids are in each host's report file (unfixed_cves), not in this data: "
+            "that is by design, not a data gap. "
+            + ("No host has critical or high ones: say so plainly when asked about the worst ones."
+               if not worst else f"Hosts with critical or high ones: {', '.join(worst[:10])}.")
+        )
     unfixed = _unfixed_summary(hosts)
     if unfixed:
         sections.append(

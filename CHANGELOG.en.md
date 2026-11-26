@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.1 (2026-11-26)
+
+### Fixes
+
+- Report prompt: each host's count of CVEs without a fix always carries `critical` and `high`, even at 0. The zeros used to be dropped, and with hosts that only had medium and low ones the model could not say there were none critical or high.
+- The prompt explains what `unfixed` is whenever there are counts (Canonical's priority, installed packages with no fixed version, kernel left out) and that the ids are in each host's report, not in the prompt. That explanation used to go only when there was a KEV, critical or high one, and the model asked to "obtain the CVE list" as if data were missing. If no host has critical or high ones the prompt says so; if some do, it names the hosts.
+
+### Tests
+
+- 1 new test (259 in total) with a host that only has medium, low and negligible CVEs without a fix, and the same host with a critical one.
+
 ## 1.3.0 (2026-11-26)
 
 ### New
