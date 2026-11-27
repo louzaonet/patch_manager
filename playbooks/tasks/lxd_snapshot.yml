@@ -1,0 +1,45 @@
+---
+# Snapshot of the LXD instance of the current host, taken on its LXD host.
+# Included by ispconfig_update.yml and release_upgrade.yml before they change
+# anything. Input: lxd_snapshot_purpose (a short word: ispconfig, release).
+#
+# Inventory, on the host that runs inside LXD:
+#   lxd_host: lxd-host-01         inventory name of the LXD host (reached over SSH)
+#   lxd_instance: web-01          LXD instance name; default: inventory name in lowercase
+#
+# (delegate_to has a default because Ansible templates it before "when".)
+# Without lxd_host nothing is done and lxd_snapshot_name stays empty, which
+# means "no automatic restore". lxc is looked up in /snap/bin first (snap LXD).
+
+- name: Start without a snapshot
+  ansible.builtin.set_fact:
+    lxd_snapshot_name: ""
+    lxd_instance_name: "{{ lxd_instance | default(inventory_hostname | lower) }}"
+
+- name: Take the LXD snapshot
+  when: lxd_host | default('') | length > 0
+  block:
+    - name: Check the LXD instance name
+      ansible.builtin.assert:
+        that:
+          - lxd_instance_name is match('^[A-Za-z0-9][A-Za-z0-9-]{0,62}$')
+          - lxd_host in groups['all']
+        fail_msg: >-
+          lxd_instance '{{ lxd_instance_name }}' is not a valid LXD name, or lxd_host
+          '{{ lxd_host }}' is not in the inventory.
+        quiet: true
+
+    - name: "Snapshot the LXD instance {{ lxd_instance_name }}"
+      ansible.builtin.command:
+        argv: [lxc, snapshot, "{{ lxd_instance_name }}", "{{ snapshot }}"]
+      environment:
+        PATH: "/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      delegate_to: "{{ lxd_host | default(inventory_hostname) }}"
+      changed_when: true
+      vars:
+        snapshot: "patchmgr-{{ lxd_snapshot_purpose }}-{{ now(utc=true).strftime('%Y%m%d%H%M%S') }}"
+      register: lxd_snapshot_run
+
+    - name: Keep the snapshot name
+      ansible.builtin.set_fact:
+        lxd_snapshot_name: "{{ lxd_snapshot_run.cmd[-1] }}"

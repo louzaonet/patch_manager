@@ -1,0 +1,69 @@
+---
+# First half of an ISPConfig update, which changes nothing on the host:
+# downloads ispconfig_target (a version) into a temporary directory and
+# builds the answers file for update.php. tasks/ispconfig_run_update.yml runs
+# it and removes the directory. Sets ispconfig_tmp. On failure the directory
+# is removed here and the error goes up.
+#
+# The answers file is built on the host from the sample in the downloaded
+# tar.gz (files/ispconfig_autoupdate.py), with ispconfig_default_answers
+# (set by the playbook) and ispconfig_update_answers merged over them.
+# The MariaDB root password is "default": update.php reads it from
+# server/lib/mysql_clientdb.conf, so it never leaves the host.
+
+- name: Prepare the update
+  block:
+    - name: Create a temporary directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: .ispconfig
+      register: ispconfig_tmp
+
+    - name: "Download ISPConfig {{ ispconfig_target }}"
+      ansible.builtin.get_url:
+        url: >-
+          {{ ispconfig_download_url | default('https://www.ispconfig.org/downloads/ISPConfig-{version}.tar.gz')
+             | replace('{version}', ispconfig_target) }}
+        dest: "{{ ispconfig_tmp.path }}/ispconfig.tar.gz"
+        mode: "0600"
+        timeout: 120
+
+    - name: Unpack it
+      ansible.builtin.unarchive:
+        src: "{{ ispconfig_tmp.path }}/ispconfig.tar.gz"
+        dest: "{{ ispconfig_tmp.path }}"
+        remote_src: true
+
+    - name: Copy the answers file builder
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/ispconfig_autoupdate.py"
+        dest: "{{ ispconfig_tmp.path }}/ispconfig_autoupdate.py"
+        mode: "0700"
+
+    - name: Build the answers file from this version's sample
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ ispconfig_tmp.path }}/ispconfig_autoupdate.py"
+          - ini
+          - --sample
+          - "{{ ispconfig_tmp.path }}/ispconfig3_install/docs/autoinstall_samples/autoinstall.ini.sample"
+          - --out
+          - "{{ ispconfig_tmp.path }}/autoupdate.ini"
+          - --answers
+          - "{{ ispconfig_default_answers | default({}) | combine(ispconfig_update_answers | default({})) | to_json }}"
+      changed_when: false
+
+  rescue:
+    - name: Remove the temporary directory
+      ansible.builtin.file:
+        path: "{{ ispconfig_tmp.path }}"
+        state: absent
+      when: ispconfig_tmp.path is defined
+
+    - name: Preparing the update failed
+      ansible.builtin.fail:
+        msg: >-
+          {{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('failed') }}
+          {{- (' (' ~ (ansible_failed_result.stderr | trim | split('\n') | last) ~ ')')
+              if ansible_failed_result.stderr | default('') | trim else '' }}

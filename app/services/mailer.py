@@ -59,6 +59,8 @@ def _notes(r: dict[str, Any], sep: str) -> list[str]:
     no_fix = [f"{r[k]} {k.split('_')[1]}" for k in ("unfixed_critical", "unfixed_high") if r.get(k)]
     if no_fix:
         out.append("no fix: " + sep.join(no_fix))
+    if r.get("release_upgrade"):
+        out.append(f"Ubuntu {r['release_upgrade']} available")
     if r["reboot_required"]:
         out.append("reboot pending")
     return out

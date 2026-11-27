@@ -60,6 +60,16 @@ sudo install -o root -g patchai -m 0640 config/capabilities.d.example/docker_che
 curl -s -u admin:... -H 'X-Requested-With: patch-ai' -X POST https://<host>/ai/api/capabilities/reload
 ```
 
+## ISPConfig and Ubuntu release upgrades (1.4.0)
+
+Three more capabilities, with their manifests in `config/capabilities.d.example/`:
+
+- **ISPConfig Check** (`ispconfig_check.yml`, read-only): compares the installed ISPConfig version with the published one. Shows up in the scheduled analysis.
+- **ISPConfig Update** (`ispconfig_update.yml`, needs approval): one host at a time, LXD snapshot, `update.php` with the updater's default answers (reconfigures the services), checks of services, panel and sites, and back to the snapshot if something that worked stops working.
+- **Release Upgrade** (`release_upgrade.yml`, needs approval): `do-release-upgrade` without prompts, one LTS jump per run, with the same snapshot and checks. Check Updates already says which release each host can move to (`release_upgrade_to`). Refuses by default hosts with `patch_reboot_blocked`, ISPConfig hosts and hosts without `lxd_host`.
+
+For the snapshot, the inventory says where each container runs: `lxd_host` (the LXD host) and, when the name differs, `lxd_instance`. Details in [section 21 of the WIKI](https://github.com/louzaonet/patch_manager/wiki/Home-EN#updating-ispconfig).
+
 ## CLI
 
 ```bash
@@ -69,6 +79,9 @@ ansible-playbook playbooks/apply_patches.yml --limit ubuntu_servers -e patch_dry
 ansible-playbook playbooks/reboot_if_needed.yml
 ansible-playbook playbooks/docker_update.yml --limit photos-01      # Docker Compose containers
 ansible-playbook playbooks/docker_check.yml                          # newer images? (changes nothing)
+ansible-playbook playbooks/ispconfig_check.yml                       # newer ISPConfig? (changes nothing)
+ansible-playbook playbooks/ispconfig_update.yml --limit web-01       # update ISPConfig
+ansible-playbook playbooks/release_upgrade.yml --limit web-01 --check   # which Ubuntu release it would go to
 ```
 
 ## LLM
@@ -89,12 +102,12 @@ If the model is unreachable the dashboard still works with keyword intent matchi
 ansible.cfg, requirements.yml        Ansible config and collections
 inventory/hosts.yml                  hosts (OS groups + logical groups)
 inventory/group_vars/                per-group policy (must sit next to the inventory)
-playbooks/                           check_updates, apply_patches, reboot_if_needed, package_query, docker_update, docker_check (+ email templates)
+playbooks/                           check_updates, apply_patches, reboot_if_needed, package_query, docker_update, docker_check, ispconfig_check, ispconfig_update, release_upgrade (+ email templates)
 collections/requirements.yml         same collections, path Semaphore looks at
 scripts/                             WinRM and macOS host setup
 app/                                 AI service (FastAPI, LangGraph graph, tools, integrations, UI)
 config/*.example                     environment templates
-config/capabilities.d.example/       example capability manifest (docker_check)
+config/capabilities.d.example/       example capability manifests (docker_check, ispconfig_check, ispconfig_update, release_upgrade)
 docker/                              compose stack, Dockerfile, nginx
 deploy/lxd/, deploy/native/          LXD launcher, native installer, systemd units, nginx site
 tests/                               pytest suite (fake LLM, mocked Semaphore/NVD/KEV)

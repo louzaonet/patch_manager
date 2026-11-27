@@ -1,0 +1,29 @@
+# Capability manifest: lets the AI run playbooks/ispconfig_check.yml and read its reports.
+# Field by field explanation: see docker_check.yml in this directory.
+#
+# Install:
+#   1. Inventory: put the ISPConfig hosts in a group ispconfig_servers (as well
+#      as in ubuntu_servers).
+#   2. Semaphore: template "ISPConfig Check" for playbooks/ispconfig_check.yml,
+#      with "allow overriding the limit". Schedule it like Check Updates.
+#   3. sudo install -o root -g patchai -m 0640 ispconfig_check.yml /etc/patch-manager/capabilities.d/
+#      and reload (POST /api/capabilities/reload or restart patch-ai).
+
+name: ispconfig_check
+description: >-
+  Checks whether a newer ISPConfig version than the installed one has been
+  published, on the ISPConfig hosts. Changes nothing.
+template: ISPConfig Check
+risk: read_only
+limit_group: ispconfig_servers
+params: {}
+run:
+  wait: true
+  timeout: 300
+  on_request: false
+reports:
+  path: ispconfig-checks/{host}.json
+  max_age_hours: 192
+  max_bytes: 16384
+include_in_analysis: true
+keywords: [ispconfig, ispconfig check, version de ispconfig, versión de ispconfig, panel ispconfig]

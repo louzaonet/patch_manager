@@ -1,0 +1,26 @@
+---
+# Sets web_problems from web_status_before and web_status_after (see
+# web_status.yml): what worked before the change and doesn't now.
+
+- name: Compare with the state before
+  ansible.builtin.set_fact:
+    web_problems: >-
+      {%- set b = web_status_before | default({'service': {}, 'fpm': 0, 'panel': None, 'site': {}}) -%}
+      {%- set a = web_status_after -%}
+      {%- set bad = [] -%}
+      {%- for name, state in b.service.items() if state == 'active' and a.service.get(name) != 'active' -%}
+      {%- set _ = bad.append('service ' ~ name ~ ': ' ~ a.service.get(name, 'missing')) -%}
+      {%- endfor -%}
+      {%- if b.fpm > 0 and a.fpm == 0 -%}
+      {%- set _ = bad.append('no php-fpm running (' ~ b.fpm ~ ' before)') -%}
+      {%- endif -%}
+      {%- set okre = '^[1-4][0-9][0-9]$' -%}
+      {%- if b.panel is not none and (b.panel | string) is match(okre)
+             and not ((a.panel | default('000', true) | string) is match(okre)) -%}
+      {%- set _ = bad.append('panel: ' ~ (a.panel | default('not listening', true))) -%}
+      {%- endif -%}
+      {%- for name, c in b.site.items() if (c | string) is match(okre)
+             and not ((a.site.get(name, '000') | string) is match(okre)) -%}
+      {%- set _ = bad.append('site ' ~ name ~ ': ' ~ a.site.get(name, 'gone')) -%}
+      {%- endfor -%}
+      {{ bad }}

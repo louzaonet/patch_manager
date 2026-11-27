@@ -1,0 +1,39 @@
+# Capability manifest: lets the AI propose playbooks/release_upgrade.yml as a
+# plan. Nothing runs until a person approves it.
+# Field by field explanation: see docker_check.yml in this directory.
+#
+# Check Updates already reports, per Ubuntu host, the release it can move to
+# (release_upgrade_to), so this capability has no check of its own.
+#
+# Install:
+#   1. Semaphore: template "Release Upgrade" for playbooks/release_upgrade.yml,
+#      with "allow overriding the limit". No schedule.
+#   2. Inventory: lxd_host (and lxd_instance) on hosts that run in LXD, for the
+#      snapshot and the automatic restore. Hosts without it are refused unless
+#      patch_release_upgrade_without_snapshot: true. Hosts with
+#      patch_reboot_blocked and ISPConfig hosts are refused by default: see the
+#      header of the playbook.
+#   3. sudo install -o root -g patchai -m 0640 release_upgrade.yml /etc/patch-manager/capabilities.d/
+#      and reload.
+
+name: release_upgrade
+description: >-
+  Moves an Ubuntu host to the release do-release-upgrade offers (one LTS jump
+  per run, one host at a time), with an LXD snapshot that is restored if the
+  upgrade fails or something that worked stops working. Long (up to two hours
+  per host) and disruptive: propose it for one host when asked, never as part
+  of routine patching.
+template: Release Upgrade
+risk: changes
+limit_group: ubuntu_servers
+params: {}
+run:
+  wait: false
+  timeout: 300
+  on_request: false
+reports:
+  path: release-upgrades/{host}.json
+  max_age_hours: 720
+  max_bytes: 32768
+include_in_analysis: false
+keywords: [do-release-upgrade, release upgrade, nueva version de ubuntu, nueva versión de ubuntu, actualizar ubuntu a]

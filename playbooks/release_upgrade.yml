@@ -1,0 +1,341 @@
+---
+# =============================================================================
+# release_upgrade.yml: move an Ubuntu host to the next release, one host at a time
+# =============================================================================
+# One jump per run (22.04 -> 24.04, then another run for 24.04 -> 26.04): it
+# goes where do-release-upgrade offers to go, which follows the host's
+# /etc/update-manager/release-upgrades. Check Updates reports that release as
+# release_upgrade_to. For each host:
+#
+#   1. refuses it when it is blocked (below) or the offer is not an LTS
+#   2. installs the pending updates of the current release, reboots if needed
+#   3. notes the failed systemd units and the state of the web stack
+#   4. LXD snapshot (tasks/lxd_snapshot.yml)
+#   5. do-release-upgrade -f DistUpgradeViewNonInteractive, with a time limit
+#   6. reboots and checks the new version
+#   7. ISPConfig hosts: reinstalls ISPConfig, reconfiguring the services
+#   8. checks that no new unit failed and that the web stack answers as before
+#   9. on a failure after the snapshot, restores it (tasks/lxd_restore.yml)
+#
+# A host that fails stops the run: the next ones are not touched.
+#
+# Third-party APT sources are disabled by the upgrade, as do-release-upgrade
+# always does. The ones it disabled are listed in the report and left so.
+# Writes reports/release-upgrades/<host>.json.
+#
+# Blocked, unless the inventory says otherwise:
+#   - hosts with patch_reboot_blocked: true (LXD and VM hosts). Override for
+#     one run with -e patch_reboot_blocked=false.
+#   - hosts in ispconfig_servers. Set patch_release_upgrade_blocked: false on
+#     the host. A new release brings a new PHP: check the PHP paths in
+#     ISPConfig (System > Server Config) afterwards. If the sites stop
+#     answering, the run restores the snapshot.
+#   - any host with patch_release_upgrade_blocked: true
+#   - hosts without lxd_host (no snapshot, no way back), unless
+#     patch_release_upgrade_without_snapshot: true
+#   - every host, when the run has more than one (--limit to one host, or
+#     patch_release_upgrade_many: true). --check is not affected.
+#
+#   ansible-playbook playbooks/release_upgrade.yml --limit web-01
+#   ansible-playbook playbooks/release_upgrade.yml --limit web-01 --check   # what it would do
+#
+# Optional vars: patch_release_upgrade_timeout (7200 s),
+# patch_release_upgrade_interim (false: refuse non-LTS releases),
+# patch_reboot_timeout (900 s), ispconfig_* as in ispconfig_update.yml.
+# =============================================================================
+
+- name: "Ubuntu release upgrade"
+  hosts: ubuntu_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  vars:
+    # The answers of ispconfig_update.sh at its prompts. Change single keys with
+    # ispconfig_update_answers in the inventory (merged over these).
+    ispconfig_default_answers:
+      do_backup: true
+      reconfigure_permissions_in_master_database: false
+      reconfigure_services: true
+      ispconfig_port: default
+      create_new_ispconfig_ssl_cert: false
+      reconfigure_crontab: true
+    release_is_ispconfig: "{{ inventory_hostname in groups.get('ispconfig_servers', []) }}"
+  tasks:
+    - name: Start with an empty result
+      ansible.builtin.set_fact:
+        release_run: {status: error, error: null}
+        release_from: "{{ ansible_facts['distribution_version'] }} ({{ ansible_facts['distribution_release'] }})"
+        release_started_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+        release_log_tail: ""
+        release_disabled_sources: []
+        release_failed_units: []
+        lxd_snapshot_name: ""
+        lxd_restored: false
+        lxd_restore_error: ""
+        web_problems: []
+        ispconfig_update_output: ""
+
+    # An approved plan for a whole group would upgrade every host in it, one
+    # after the other. The playbook takes one host unless told otherwise.
+    - name: Is this host blocked?
+      ansible.builtin.set_fact:
+        release_blocked: >-
+          {{ 'more than one host in this run (' ~ ansible_play_hosts_all | length ~ '): use --limit with one host, or patch_release_upgrade_many: true'
+               if ansible_play_hosts_all | length > 1 and not ansible_check_mode
+                  and not (patch_release_upgrade_many | default(false) | bool)
+             else 'patch_reboot_blocked is set (a release upgrade needs reboots)'
+               if patch_reboot_blocked | default(false) | bool
+             else 'ISPConfig host: set patch_release_upgrade_blocked: false on it to allow it'
+               if release_is_ispconfig and patch_release_upgrade_blocked | default(true) | bool
+             else 'patch_release_upgrade_blocked is set'
+               if patch_release_upgrade_blocked | default(false) | bool
+             else 'no lxd_host, so no snapshot to go back to; set patch_release_upgrade_without_snapshot: true to go on'
+               if lxd_host | default('') | length == 0
+                  and not (patch_release_upgrade_without_snapshot | default(false) | bool)
+             else '' }}
+
+    - name: Which release is offered
+      ansible.builtin.command:
+        argv: [timeout, "120", do-release-upgrade, --check-dist-upgrade-only]
+      environment:
+        LC_ALL: C
+      register: release_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Decide what to do
+      ansible.builtin.set_fact:
+        release_target: "{{ offered[0] if offered else '' }}"
+        release_run: >-
+          {{ {'status': 'error', 'error': 'could not reach the Ubuntu release list (changelogs.ubuntu.com)'}
+               if not offered and 'Failed to connect' in release_text
+             else {'status': 'error', 'error': 'do-release-upgrade not installed (package ubuntu-release-upgrader-core)'}
+               if not offered and release_check.rc == 127
+             else {'status': 'error', 'error': 'do-release-upgrade --check-dist-upgrade-only timed out'}
+               if not offered and release_check.rc == 124
+             else {'status': 'error', 'error': 'could not check: ' ~ (release_text | trim | split('\n') | last)[-200:]}
+               if not offered and release_check.rc not in [0, 1]
+             else {'status': 'none', 'error': None} if not offered
+             else {'status': 'refused', 'error': release_blocked} if release_blocked
+             else {'status': 'refused', 'error': offered[0] ~ ' is not an LTS release (patch_release_upgrade_interim: true to allow)'}
+               if 'LTS' not in offered[0] and not (patch_release_upgrade_interim | default(false) | bool)
+             else {'status': 'check_only', 'error': None} if ansible_check_mode
+             else {'status': 'pending', 'error': None} }}
+      vars:
+        release_text: "{{ (release_check.stdout | default('')) ~ '\n' ~ (release_check.stderr | default('')) }}"
+        offered: "{{ release_text | regex_findall(\"New release '([^']+)' available\") }}"
+
+    # A fact of its own: the block's "when" is checked again for every task,
+    # rescue included, and release_run changes inside the block.
+    - name: Remember whether to upgrade
+      ansible.builtin.set_fact:
+        release_do_upgrade: "{{ release_run.status == 'pending' }}"
+
+    - name: Upgrade
+      when: release_do_upgrade | bool
+      block:
+        # do-release-upgrade wants the current release fully up to date.
+        - name: Install the pending updates of the current release
+          ansible.builtin.apt:
+            update_cache: true
+            upgrade: dist
+
+        - name: Check if those updates need a reboot
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: release_reboot_flag
+
+        - name: Reboot before the upgrade
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ patch_reboot_timeout | default(900) | int }}"
+          when: release_reboot_flag.stat.exists
+
+        - name: Failed units before
+          ansible.builtin.command: systemctl list-units --type=service --state=failed --plain --no-legend  # noqa: command-instead-of-module
+          register: release_units_before
+          changed_when: false
+
+        - name: APT sources already disabled before
+          ansible.builtin.shell: &disabled_sources >-
+            grep -l -i -e 'disabled on upgrade' -e 'could not be automatically migrated' -e '^[[:space:]]*Enabled:[[:space:]]*no'
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null
+          register: release_sources_before
+          changed_when: false
+          failed_when: false
+
+        - name: State of the web stack before
+          ansible.builtin.include_tasks: tasks/web_status.yml
+          vars:
+            web_status_stage: before
+
+        - name: Snapshot
+          ansible.builtin.include_tasks: tasks/lxd_snapshot.yml
+          vars:
+            lxd_snapshot_purpose: release
+
+        # Time limit: patch_release_upgrade_timeout (7200 s).
+        - name: "Run do-release-upgrade to {{ release_target }}"
+          ansible.builtin.command:
+            argv: [do-release-upgrade, -f, DistUpgradeViewNonInteractive]
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+            LC_ALL: C
+          async: "{{ patch_release_upgrade_timeout | default(7200) | int }}"
+          poll: 30
+          register: release_upgrade_run
+          changed_when: true
+
+        - name: Reboot into the new release
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ (patch_reboot_timeout | default(900) | int) * 2 }}"
+
+        - name: Read the version now running
+          ansible.builtin.setup:
+            filter: [ansible_distribution_version, ansible_distribution_release]
+
+        - name: Check that it is the offered release
+          ansible.builtin.assert:
+            that: ansible_facts['distribution_version'] == release_target.split(' ')[0].split('.')[:2] | join('.')
+            fail_msg: >-
+              do-release-upgrade finished but the host runs {{ ansible_facts['distribution_version'] }},
+              not {{ release_target }}
+            quiet: true
+
+        - name: ISPConfig for the new release
+          when: release_is_ispconfig
+          block:
+            - name: Installed and latest ISPConfig
+              ansible.builtin.include_tasks: tasks/ispconfig_version.yml
+
+            - name: Download ISPConfig and build the answers file
+              ansible.builtin.include_tasks: tasks/ispconfig_prepare_update.yml
+              vars:
+                ispconfig_target: "{{ ispconfig_latest }}"
+
+            - name: Reinstall ISPConfig, reconfiguring the services
+              ansible.builtin.include_tasks: tasks/ispconfig_run_update.yml
+              vars:
+                ispconfig_target: "{{ ispconfig_latest }}"
+
+        - name: Give the services a moment
+          ansible.builtin.pause:
+            seconds: 15
+
+        - name: Failed units after
+          ansible.builtin.command: systemctl list-units --type=service --state=failed --plain --no-legend  # noqa: command-instead-of-module
+          register: release_units_after
+          changed_when: false
+
+        - name: Keep the units that failed with the new release
+          ansible.builtin.set_fact:
+            release_failed_units: >-
+              {{ release_units_after.stdout_lines | map('split') | map('first') | list
+                 | difference(release_units_before.stdout_lines | map('split') | map('first') | list) }}
+
+        - name: State of the web stack after
+          ansible.builtin.include_tasks: tasks/web_status.yml
+          vars:
+            web_status_stage: after
+
+        - name: Stop if something that worked before doesn't now
+          ansible.builtin.fail:
+            msg: >-
+              After the upgrade: {{ (release_failed_units | map('regex_replace', '^', 'failed unit ') | list
+                                     + web_problems) | join('; ') }}
+          when: release_failed_units | length > 0 or web_problems | length > 0
+
+        # Files the upgrader marked ("disabled on upgrade to ...", or turned
+        # into Enabled: no) and weren't marked before. They stay off: a
+        # repository has to support the new release before it goes back on.
+        - name: APT sources disabled after
+          ansible.builtin.shell: *disabled_sources
+          register: release_sources_after
+          changed_when: false
+          failed_when: false
+
+        - name: Upgraded
+          ansible.builtin.set_fact:
+            release_run: {status: upgraded, error: null}
+            release_disabled_sources: >-
+              {{ release_sources_after.stdout_lines | default([])
+                 | difference(release_sources_before.stdout_lines | default([])) }}
+
+        - name: Delete older snapshots of this playbook
+          ansible.builtin.include_tasks: tasks/lxd_snapshot_prune.yml
+          vars:
+            lxd_snapshot_purpose: release
+
+      rescue:
+        - name: Keep the error
+          ansible.builtin.set_fact:
+            release_run:
+              status: failed
+              error: >-
+                {{ ((ansible_failed_task.name | default('') ~ ': ' if ansible_failed_task is defined else '')
+                    ~ (ansible_failed_result.msg | default('upgrade failed') | string)
+                    ~ ((' (' ~ (ansible_failed_result.stderr | trim | split('\n') | last) ~ ')')
+                       if ansible_failed_result.stderr | default('') | trim else '')) | truncate(500) }}
+
+        # Before the restore, which takes the log with it.
+        - name: Keep the end of the upgrader log
+          ansible.builtin.command: tail -n 60 /var/log/dist-upgrade/main.log
+          register: release_log
+          changed_when: false
+          failed_when: false
+          when: release_upgrade_run is defined   # an older log says nothing about this run
+
+        - name: Keep it for the report
+          ansible.builtin.set_fact:
+            release_log_tail: "{{ release_log.stdout | default('') }}"
+
+        - name: Go back to the snapshot
+          ansible.builtin.include_tasks: tasks/lxd_restore.yml
+
+    - name: Create the report directory on the controller
+      ansible.builtin.file:
+        path: "{{ patch_report_dir }}/release-upgrades"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      check_mode: false
+      vars: &controller_vars
+        ansible_become: false
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: patch_report_enabled | default(true) | bool
+
+    - name: Write the report on the controller
+      ansible.builtin.copy:
+        content: "{{ report | to_nice_json }}\n"
+        dest: "{{ patch_report_dir }}/release-upgrades/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      check_mode: false
+      vars:
+        <<: *controller_vars
+        report:
+          host: "{{ inventory_hostname }}"
+          started_at: "{{ release_started_at }}"
+          finished_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          # upgraded | none | check_only | refused | failed | error
+          status: "{{ release_run.status }}"
+          from_release: "{{ release_from }}"
+          to_release: "{{ release_target | default('', true) or None }}"
+          error: "{{ release_run.error }}"
+          failed_units: "{{ release_failed_units }}"
+          problems: "{{ web_problems }}"
+          disabled_sources: "{{ release_disabled_sources }}"
+          ispconfig: "{{ release_is_ispconfig }}"
+          snapshot: "{{ lxd_snapshot_name or None }}"
+          restored: "{{ lxd_restored }}"
+          restore_error: "{{ lxd_restore_error or None }}"
+          upgrader_log_tail: "{{ release_log_tail or None }}"
+          ispconfig_output_tail: "{{ ispconfig_update_output or None }}"
+      when: patch_report_enabled | default(true) | bool
+
+    - name: Fail the host if it was not upgraded
+      ansible.builtin.fail:
+        msg: >-
+          {{ release_run.error }}{{ ' Restored to ' ~ lxd_snapshot_name ~ '.' if lxd_restored else '' }}
+          {{- (' Restore failed: ' ~ lxd_restore_error) if lxd_restore_error else '' }}
+      when: release_run.status in ['failed', 'error', 'refused']

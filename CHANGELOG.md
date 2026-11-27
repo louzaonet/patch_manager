@@ -1,5 +1,25 @@
 # Registro de cambios
 
+## 1.4.0 (2026-11-27)
+
+### Novedades
+
+- ISPConfig: `playbooks/ispconfig_check.yml` compara la versión instalada con la que publica ISPConfig (el mismo fichero que lee su actualizador) y deja `reports/ispconfig-checks/<host>.json`. No cambia nada. Su capacidad, `ispconfig_check`, entra en el análisis programado.
+- ISPConfig: `playbooks/ispconfig_update.yml` actualiza los hosts de `ispconfig_servers` de uno en uno y se para en el primero que falle. Lee el estado de la pila web (servicios, php-fpm, panel y cada web de `sites-enabled`, pedida a 127.0.0.1 siguiendo las redirecciones), descarga la versión y prepara el fichero de respuestas sin cambiar nada, y solo entonces hace una snapshot LXD. Después ejecuta `update.php --autoinstall` con un tiempo máximo, comprueba la versión y que todo lo que respondía siga respondiendo, y si algo falla vuelve a la snapshot. Las respuestas por defecto son las del actualizador interactivo cuando se acepta todo, reconfigurar servicios incluido. El fichero de respuestas se genera en el host a partir del ejemplo que trae el tar.gz de esa versión (`playbooks/files/ispconfig_autoupdate.py`), con las mismas claves y la misma forma de cada sí/no, porque una clave que falta o un `n` donde se espera `no` deja a `update.php` esperando para siempre. La contraseña de MariaDB va como `default` y la lee el propio `update.php` en el host. Para cambiar alguna respuesta basta con poner esa clave en `ispconfig_update_answers` en el inventario. `ispconfig_force=true` reinstala la misma versión. Capacidad `ispconfig_update`, con aprobación.
+- Ubuntu: Check Updates guarda en cada informe la versión a la que `do-release-upgrade` ofrece ir (`release_upgrade_to`, p. ej. "26.04.1 LTS"), o `release_check_error` si no se pudo saber. No puntúa. La IA lo menciona y el correo y el panel lo ponen en las notas. Se desactiva con `patch_release_check: false`.
+- Ubuntu: `playbooks/release_upgrade.yml` hace el salto, un host y una versión por ejecución. Pone al día la versión actual, anota las unidades que ya fallaban y el estado de la pila web, hace la snapshot y ejecuta `do-release-upgrade -f DistUpgradeViewNonInteractive` con un tiempo máximo. Luego reinicia, comprueba la versión, reinstala ISPConfig en los hosts que lo tienen y comprueba que no falla nada nuevo. Si algo falla, guarda el final del log del actualizador y vuelve a la snapshot. Los repositorios de terceros que desactiva el actualizador en esa ejecución salen en el informe y no se reactivan. Por defecto rechaza los hosts con `patch_reboot_blocked`, los de `ispconfig_servers` y los que no tienen snapshot posible, las versiones que no son LTS y las ejecuciones con más de un host, para que un plan aprobado para un grupo entero no los actualice todos seguidos (`patch_release_upgrade_many: true` lo permite). Capacidad `release_upgrade`, con aprobación.
+- Snapshots LXD (`playbooks/tasks/lxd_snapshot.yml`, `lxd_restore.yml`, `lxd_snapshot_prune.yml`): el inventario dice en qué host LXD corre cada contenedor (`lxd_host`) y, si no coincide, su nombre en LXD (`lxd_instance`). Tras una ejecución correcta se borran las snapshots anteriores del mismo tipo y se queda la última.
+
+### Cambios
+
+- Prompt: los CVE sin corrección no tienen parche, y el modelo ya no debe recomendar parchearlos. La explicación de la nota de riesgo aclara que un KEV sin corrección no puntúa.
+
+### Pruebas
+
+- 35 tests nuevos (295 en total): orden de versiones de ISPConfig, fichero de respuestas a partir del ejemplo real de la 3.3.3p2, claves y formas rechazadas, permisos del fichero, respuestas de los dos playbooks, manifiestos, lectura de `release_upgrade_to`, prompt, correo y la comparación del estado de la pila web ejecutada con Ansible.
+- ISPConfig Check y Update contra un ISPConfig simulado servido en local: actualización, versión ya al día, `ispconfig_force`, `--check`, una respuesta cambiada desde el inventario, una clave que no existe y una descarga que falla (las dos sin snapshot ni restauración), fallo de `update.php` y un `update.php` que se queda esperando, cortado al llegar al tiempo máximo y con el directorio temporal borrado. Con un `lxc` simulado: snapshot, borrado de las anteriores del mismo tipo (las demás se quedan) y, al fallar, parada, restauración y arranque.
+- Detección de versión en Check Updates contra una lista de versiones de Ubuntu servida en local: versión ofrecida, ninguna y sin red. `release_upgrade.yml` en modo `--check`: los bloqueos, versión no LTS, ninguna ofrecida y sin red; y con dos hosts sin `--check`, rechazada antes de cambiar nada. La búsqueda de repositorios desactivados, contra ficheros `.list` y `.sources` de prueba. ansible-lint (perfil production).
+
 ## 1.3.2 (2026-11-27)
 
 ### Correcciones

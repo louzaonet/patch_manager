@@ -1,0 +1,74 @@
+---
+# ispconfig_check.yml: is there a newer ISPConfig than the installed one?
+# Read-only. Compares ISPC_APP_VERSION on each host of ispconfig_servers with
+# the version file the ISPConfig updater reads, and writes
+# reports/ispconfig-checks/<host>.json. The ispconfig_check capability
+# (config/capabilities.d.example/ispconfig_check.yml) lets the AI run it and
+# read those reports.
+#
+#   ansible-playbook playbooks/ispconfig_check.yml
+#   ansible-playbook playbooks/ispconfig_check.yml --limit web-01
+#
+# Optional vars: ispconfig_dir (/usr/local/ispconfig), ispconfig_version_url.
+
+- name: "Check ISPConfig version"
+  hosts: ispconfig_servers
+  become: true
+  gather_facts: false
+  check_mode: false
+  tasks:
+    - name: Start with an empty result
+      ansible.builtin.set_fact:
+        ispconfig_check_error: ""
+
+    - name: Read both versions
+      block:
+        - name: Installed and latest version
+          ansible.builtin.include_tasks: tasks/ispconfig_version.yml
+      rescue:
+        - name: Keep the error for the report
+          ansible.builtin.set_fact:
+            ispconfig_check_error: "{{ ansible_failed_result.msg | default('check failed') | string | truncate(300) }}"
+
+- name: "Write ISPConfig check reports"
+  hosts: ispconfig_servers
+  gather_facts: false
+  check_mode: false
+  tasks:
+    - name: Create the report directory on the controller
+      ansible.builtin.file:
+        path: "{{ patch_report_dir }}/ispconfig-checks"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      vars: &controller_vars
+        ansible_become: false
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: patch_report_enabled | default(true) | bool
+
+    - name: Write the result of each host on the controller
+      ansible.builtin.copy:
+        content: "{{ ispconfig_check_report | to_nice_json }}\n"
+        dest: "{{ patch_report_dir }}/ispconfig-checks/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      vars:
+        <<: *controller_vars
+        ispconfig_check_report:
+          host: "{{ inventory_hostname }}"
+          checked_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          installed: "{{ ispconfig_installed | default(None) or None }}"
+          latest: "{{ ispconfig_latest | default(None) or None }}"
+          # older: an update is available; newer: a development version is installed.
+          state: "{{ None if ispconfig_check_error else ispconfig_state | default(None) }}"
+          update_available: "{{ not ispconfig_check_error and ispconfig_state | default('') == 'older' }}"
+          error: "{{ ispconfig_check_error or None }}"
+      when:
+        - patch_report_enabled | default(true) | bool
+        - ispconfig_check_error is defined
+
+    - name: Fail the hosts that could not be checked
+      ansible.builtin.fail:
+        msg: "{{ ispconfig_check_error }}"
+      when: ispconfig_check_error | default('') | length > 0

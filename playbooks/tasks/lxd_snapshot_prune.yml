@@ -1,0 +1,34 @@
+---
+# After a run that went well: delete the older snapshots this playbook took of
+# the instance (patchmgr-<purpose>-*), keeping the one just taken, so there is
+# always one to go back to and they don't pile up. Snapshots with other names
+# are never touched.
+
+- name: Delete older Patch Manager snapshots
+  when: lxd_snapshot_name | default('') | length > 0
+  block:
+    - name: "List the snapshots of {{ lxd_instance_name }}"
+      ansible.builtin.command:
+        argv: [lxc, query, "/1.0/instances/{{ lxd_instance_name }}/snapshots"]
+      environment: &lxd_env
+        PATH: "/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      delegate_to: "{{ lxd_host | default(inventory_hostname) }}"
+      register: lxd_snapshots
+      changed_when: false
+
+    - name: Delete the older ones
+      ansible.builtin.command:
+        argv: [lxc, delete, "{{ lxd_instance_name }}/{{ item }}"]
+      environment: *lxd_env
+      delegate_to: "{{ lxd_host | default(inventory_hostname) }}"
+      changed_when: true
+      loop: >-
+        {{ lxd_snapshots.stdout | from_json | map('regex_replace', '^.*/', '')
+           | select('match', '^patchmgr-' ~ lxd_snapshot_purpose ~ '-\d{14}$')
+           | reject('equalto', lxd_snapshot_name) | list }}
+
+  # Pruning is housekeeping: never fail a run that already went well.
+  rescue:
+    - name: Old snapshots not deleted
+      ansible.builtin.debug:
+        msg: "Could not delete older snapshots: {{ ansible_failed_result.msg | default('') | truncate(200) }}"

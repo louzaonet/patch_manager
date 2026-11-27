@@ -1,0 +1,52 @@
+---
+# Put the LXD instance of the current host back to lxd_snapshot_name (taken by
+# tasks/lxd_snapshot.yml) and wait for the host to answer again. Anything
+# written on the instance since the snapshot is lost. Sets lxd_restored.
+
+- name: Nothing restored yet
+  ansible.builtin.set_fact:
+    lxd_restored: false
+    lxd_restore_error: ""
+
+- name: Restore the LXD snapshot
+  when: lxd_snapshot_name | default('') | length > 0
+  block:
+    # Forced: the instance is going back to the snapshot anyway, and a clean
+    # shutdown can hang on whatever broke it.
+    - name: "Stop the LXD instance {{ lxd_instance_name }}"
+      ansible.builtin.command:
+        argv: [lxc, stop, --force, "{{ lxd_instance_name }}"]
+      environment: &lxd_env
+        PATH: "/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      delegate_to: "{{ lxd_host | default(inventory_hostname) }}"
+      register: lxd_stop
+      changed_when: lxd_stop.rc == 0
+      failed_when: lxd_stop.rc != 0 and 'already stopped' not in (lxd_stop.stderr | lower)
+
+    - name: "Restore the snapshot {{ lxd_snapshot_name }}"
+      ansible.builtin.command:
+        argv: [lxc, restore, "{{ lxd_instance_name }}", "{{ lxd_snapshot_name }}"]
+      environment: *lxd_env
+      delegate_to: "{{ lxd_host | default(inventory_hostname) }}"
+      changed_when: true
+
+    - name: "Start {{ lxd_instance_name }}"
+      ansible.builtin.command:
+        argv: [lxc, start, "{{ lxd_instance_name }}"]
+      environment: *lxd_env
+      delegate_to: "{{ lxd_host | default(inventory_hostname) }}"
+      changed_when: true
+
+    - name: Wait for the host to answer again
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 600
+
+    - name: Restored
+      ansible.builtin.set_fact:
+        lxd_restored: true
+
+  rescue:
+    - name: Keep why the restore failed
+      ansible.builtin.set_fact:
+        lxd_restore_error: "{{ ansible_failed_result.msg | default('restore failed') | string | truncate(300) }}"

@@ -1,0 +1,51 @@
+---
+# Second half of an ISPConfig update: runs update.php with the answers file
+# that tasks/ispconfig_prepare_update.yml left in ispconfig_tmp, then removes
+# that directory. Used by ispconfig_update.yml and, after an Ubuntu release
+# upgrade, by release_upgrade.yml. Fails if update.php fails, runs past
+# ispconfig_update_timeout or leaves another version than ispconfig_target
+# installed. Sets ispconfig_update_output (the last lines of its output).
+
+- name: Run the updater
+  block:
+    # async: update.php waits for an answer if one is missing, and with no
+    # terminal it never gets one. The time limit ends that.
+    - name: "Run update.php, time limit in seconds: {{ ispconfig_update_timeout | default(1800) }}"
+      ansible.builtin.command:
+        argv: [php, -q, update.php, "--autoinstall={{ ispconfig_tmp.path }}/autoupdate.ini"]
+        chdir: "{{ ispconfig_tmp.path }}/ispconfig3_install/install"
+      environment:
+        LC_ALL: C
+      async: "{{ ispconfig_update_timeout | default(1800) | int }}"
+      poll: 15
+      register: ispconfig_update_run
+      changed_when: true
+
+  always:
+    - name: Keep the end of the updater output
+      ansible.builtin.set_fact:
+        ispconfig_update_output: >-
+          {{ (((ispconfig_update_run.stdout | default('')) ~ '\n' ~ (ispconfig_update_run.stderr | default('')))
+              | trim | split('\n') | select | list)[-40:] | join('\n') }}
+      when: ispconfig_update_run is defined
+
+    - name: Remove the temporary directory
+      ansible.builtin.file:
+        path: "{{ ispconfig_tmp.path }}"
+        state: absent
+      when: ispconfig_tmp.path is defined
+
+- name: Read the version now installed
+  ansible.builtin.slurp:
+    src: "{{ ispconfig_dir | default('/usr/local/ispconfig') }}/server/lib/config.inc.php"
+  register: ispconfig_config_after
+
+- name: Check that it is the version just installed
+  ansible.builtin.assert:
+    that: installed_now == ispconfig_target
+    fail_msg: "update.php finished but ISPConfig reports {{ installed_now or 'no version' }}, not {{ ispconfig_target }}"
+    quiet: true
+  vars:
+    installed_now: >-
+      {{ ispconfig_config_after.content | b64decode
+         | regex_search("define\(\s*'ISPC_APP_VERSION'\s*,\s*'([^']+)'", '\1') | default([''], true) | first }}

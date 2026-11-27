@@ -59,6 +59,9 @@ class HostInfo:
     unfixed_top: list[dict[str, Any]] = field(default_factory=list)    # critical and high
     unfixed_ids: list[str] = field(default_factory=list)               # all, for the KEV check
     unfixed_note: str = ""
+    # Next Ubuntu release do-release-upgrade offers ("26.04.1 LTS"), not scored
+    release_upgrade_to: str = ""
+    release_check_note: str = ""
     reboot_required: bool = False
     last_patch_status: str = ""
     last_patch_at: str = ""

@@ -66,6 +66,20 @@
         path: /var/run/reboot-required
       register: reboot_flag
 
+    # The release do-release-upgrade would go to, following the host's
+    # /etc/update-manager/release-upgrades (Prompt=lts, normal or never).
+    # LTS to LTS is only offered once the first point release is out. It
+    # prints "New release '24.04.3 LTS' available." and changes nothing.
+    - name: Check whether a new Ubuntu release is offered
+      ansible.builtin.command:
+        argv: [timeout, "{{ patch_release_check_timeout | default(60) }}", do-release-upgrade, --check-dist-upgrade-only]
+      environment:
+        LC_ALL: C
+      register: release_check
+      changed_when: false
+      failed_when: false
+      when: patch_release_check | default(true) | bool
+
     # Lines look like: "openssl/noble-updates,noble-security 3.0.13-0ubuntu3.5 amd64 [upgradable from: ...]"
     - name: Build host report
       ansible.builtin.set_fact:
@@ -83,8 +97,25 @@
           security_packages: "{{ security | map('regex_replace', '/.*$', '') | list }}"
           cves: []   # filled on the controller from the OVAL data, see the last play
           reboot_required: "{{ reboot_flag.stat.exists }}"
+          # e.g. "26.04.1 LTS"; null when none is offered. release_check_error
+          # when it could not be checked (no do-release-upgrade, no network).
+          release_upgrade_to: "{{ offered[0] if offered else None }}"
+          release_check_error: >-
+            {{ None if not (patch_release_check | default(true) | bool) or offered
+               else 'could not reach the Ubuntu release list (changelogs.ubuntu.com)'
+                    if 'Failed to connect' in release_text
+               else None if release_check.rc | default(0) in [0, 1]
+               else 'do-release-upgrade not installed (package ubuntu-release-upgrader-core)'
+                    if release_check.rc == 127
+               else 'timed out' if release_check.rc == 124
+               else ((release_check.stderr | default('', true) | trim).splitlines() | last
+                     | default('rc ' ~ release_check.rc))[-200:] }}
       vars:
         upgradable: "{{ apt_upgradable.stdout_lines | select('search', '\\[upgradable from') | list }}"
+        # rc is 0 with a release to offer and 1 without one, but also 1 when
+        # the list can't be downloaded: the text tells them apart.
+        release_text: "{{ (release_check.stdout | default('')) ~ '\n' ~ (release_check.stderr | default('')) }}"
+        offered: "{{ release_text | regex_findall(\"New release '([^']+)' available\") }}"
         security: "{{ upgradable | select('search', '^[^ ]+/[^ ]*-security') | list }}"
 
 # ─── Rocky Linux ────────────────────────────────────────────────────────────

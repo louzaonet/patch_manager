@@ -60,6 +60,16 @@ sudo install -o root -g patchai -m 0640 config/capabilities.d.example/docker_che
 curl -s -u admin:... -H 'X-Requested-With: patch-ai' -X POST https://<host>/ai/api/capabilities/reload
 ```
 
+## ISPConfig y cambio de versión de Ubuntu (1.4.0)
+
+Tres capacidades más, con sus manifiestos en `config/capabilities.d.example/`:
+
+- **ISPConfig Check** (`ispconfig_check.yml`, solo lectura): compara la versión instalada de ISPConfig con la publicada. Sale en el análisis programado.
+- **ISPConfig Update** (`ispconfig_update.yml`, con aprobación): un host cada vez, snapshot LXD, `update.php` con las respuestas por defecto del actualizador (reconfigura los servicios), comprobación de servicios, panel y webs, y vuelta a la snapshot si algo que funcionaba deja de hacerlo.
+- **Release Upgrade** (`release_upgrade.yml`, con aprobación): `do-release-upgrade` sin preguntas, un salto de LTS por ejecución, con la misma snapshot y las mismas comprobaciones. Check Updates ya dice a qué versión puede ir cada host (`release_upgrade_to`). Rechaza por defecto los hosts con `patch_reboot_blocked`, los de ISPConfig y los que no tienen `lxd_host`.
+
+Para la snapshot, el inventario dice dónde corre cada contenedor: `lxd_host` (el host LXD) y, si el nombre no coincide, `lxd_instance`. Detalles en la [sección 21 de la WIKI](https://github.com/louzaonet/patch_manager/wiki#actualizar-ispconfig).
+
 ## CLI
 
 ```bash
@@ -69,6 +79,9 @@ ansible-playbook playbooks/apply_patches.yml --limit ubuntu_servers -e patch_dry
 ansible-playbook playbooks/reboot_if_needed.yml
 ansible-playbook playbooks/docker_update.yml --limit photos-01      # contenedores Docker Compose
 ansible-playbook playbooks/docker_check.yml                          # ¿hay imágenes nuevas? (no cambia nada)
+ansible-playbook playbooks/ispconfig_check.yml                       # ¿hay ISPConfig nuevo? (no cambia nada)
+ansible-playbook playbooks/ispconfig_update.yml --limit web-01       # actualizar ISPConfig
+ansible-playbook playbooks/release_upgrade.yml --limit web-01 --check   # a qué versión de Ubuntu iría
 ```
 
 ## LLM
@@ -89,12 +102,12 @@ Si el modelo no responde, el panel sigue funcionando con detección de intenció
 ansible.cfg, requirements.yml        configuración de Ansible y colecciones
 inventory/hosts.yml                  hosts (grupos por SO + grupos lógicos)
 inventory/group_vars/                política por grupo (tiene que estar junto al inventario)
-playbooks/                           check_updates, apply_patches, reboot_if_needed, package_query, docker_update, docker_check (+ plantillas de correo)
+playbooks/                           check_updates, apply_patches, reboot_if_needed, package_query, docker_update, docker_check, ispconfig_check, ispconfig_update, release_upgrade (+ plantillas de correo)
 collections/requirements.yml         las mismas colecciones, en la ruta que busca Semaphore
 scripts/                             preparación de hosts WinRM y macOS
 app/                                 servicio de IA (FastAPI, grafo LangGraph, herramientas, integraciones, interfaz)
 config/*.example                     plantillas de variables de entorno
-config/capabilities.d.example/       manifiesto de capacidad de ejemplo (docker_check)
+config/capabilities.d.example/       manifiestos de capacidad de ejemplo (docker_check, ispconfig_check, ispconfig_update, release_upgrade)
 docker/                              stack de compose, Dockerfile, nginx
 deploy/lxd/, deploy/native/          lanzador LXD, instalador nativo, unidades systemd, sitio nginx
 tests/                               tests de pytest (LLM simulado, Semaphore/NVD/KEV simulados)

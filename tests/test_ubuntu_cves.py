@@ -641,6 +641,7 @@ async def test_prompt_explains_unfixed_counts_without_critical_or_high(env, fake
     prompt = fake.prompts["generate_briefing"][0]
     assert "by Canonical's priority" in prompt and "not a data gap" in prompt
     assert "No host has critical or high ones" in prompt
+    assert "There is no patch for them: never recommend patching" in prompt   # 1.4.0
     assert "CVES WITHOUT A FIX YET" not in prompt          # nothing KEV, critical or high to list
 
     h.unfixed_counts = {"critical": 1, "high": 0, "medium": 2}

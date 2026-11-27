@@ -34,6 +34,8 @@ MAX_LIST_ITEMS = 200
 MAX_CVES = 2000           # one Ubuntu kernel notice alone lists over a hundred
 _PRIORITIES = ("negligible", "low", "medium", "high", "critical")
 _TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z?$")
+# As do-release-upgrade prints it: "26.04.1 LTS", "26.10".
+_RELEASE_RE = re.compile(r"^\d{2}\.\d{2}(?:\.\d{1,2})?(?: LTS)?$")
 MAX_PACKAGES = 20000
 
 
@@ -154,6 +156,11 @@ class ReportReader:
         host.security_without_notice = [
             p for p in _str_list(report.get("security_without_notice")) if _PKG_NAME_RE.match(p)]
         host.kernel_not_covered = bool(report.get("kernel_checked")) and not report.get("kernel_covered")
+        release = str(report.get("release_upgrade_to") or "")
+        host.release_upgrade_to = release if _RELEASE_RE.match(release) else ""
+        if report.get("release_check_error"):
+            error = _label(report.get("release_check_error"), 120)
+            host.release_check_note = f"release check failed: {error}"
         if not host.cve_source:
             # Reports from before 1.3.0 have neither field: say nothing then.
             err = report.get("cve_error")

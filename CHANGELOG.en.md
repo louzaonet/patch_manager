@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.0 (2026-11-27)
+
+### New
+
+- ISPConfig: `playbooks/ispconfig_check.yml` compares the installed version with the one ISPConfig publishes (the same file its updater reads) and writes `reports/ispconfig-checks/<host>.json`. It changes nothing. Its capability, `ispconfig_check`, goes into the scheduled analysis.
+- ISPConfig: `playbooks/ispconfig_update.yml` updates the hosts in `ispconfig_servers` one at a time and stops at the first that fails. It reads the state of the web stack (services, php-fpm, panel and each site in `sites-enabled`, requested from 127.0.0.1 following redirects), downloads the version and prepares the answers file without changing anything, and only then takes an LXD snapshot. Then it runs `update.php --autoinstall` with a time limit, checks the version and that everything that answered still answers, and goes back to the snapshot if anything fails. The default answers are those of the interactive updater when everything is accepted, reconfiguring the services included. The answers file is built on the host from the sample in that version's tar.gz (`playbooks/files/ispconfig_autoupdate.py`), with the same keys and the same spelling of each yes/no, because a missing key or an `n` where `no` is expected leaves `update.php` waiting forever. The MariaDB password goes as `default` and `update.php` reads it on the host. To change an answer, set just that key in `ispconfig_update_answers` in the inventory. `ispconfig_force=true` reinstalls the same version. Capability `ispconfig_update`, with approval.
+- Ubuntu: Check Updates stores in each report the release `do-release-upgrade` offers (`release_upgrade_to`, e.g. "26.04.1 LTS"), or `release_check_error` when it couldn't tell. Not scored. The AI mentions it and the email and dashboard show it in the notes. Turn it off with `patch_release_check: false`.
+- Ubuntu: `playbooks/release_upgrade.yml` makes the move, one host and one release per run. It brings the current release up to date, notes the units that already failed and the state of the web stack, takes the snapshot and runs `do-release-upgrade -f DistUpgradeViewNonInteractive` with a time limit. Then it reboots, checks the version, reinstalls ISPConfig on hosts that have it and checks that nothing new fails. If anything fails, it keeps the end of the upgrader log and goes back to the snapshot. Third-party repositories the upgrader disables in that run are listed in the report and not re-enabled. By default it refuses hosts with `patch_reboot_blocked`, hosts in `ispconfig_servers`, hosts where no snapshot is possible, non-LTS releases, and runs with more than one host, so that a plan approved for a whole group doesn't upgrade them all in a row (`patch_release_upgrade_many: true` allows it). Capability `release_upgrade`, with approval.
+- LXD snapshots (`playbooks/tasks/lxd_snapshot.yml`, `lxd_restore.yml`, `lxd_snapshot_prune.yml`): the inventory says which LXD host each container runs on (`lxd_host`) and, when it differs, its LXD name (`lxd_instance`). After a run that went well, older snapshots of the same kind are deleted and the last one stays.
+
+### Changes
+
+- Prompt: CVEs without a fix have no patch, and the model must no longer recommend patching them. The explanation of the risk score says that a KEV with no fix is not scored.
+
+### Tests
+
+- 35 new tests (295 in total): ISPConfig version order, answers file from the real 3.3.3p2 sample, refused keys and spellings, file permissions, the answers of both playbooks, manifests, reading `release_upgrade_to`, prompt, email and the web stack comparison run with Ansible.
+- ISPConfig Check and Update against a simulated ISPConfig served locally: update, version already current, `ispconfig_force`, `--check`, an answer changed from the inventory, an unknown key and a failing download (both with no snapshot and no restore), a failing `update.php` and an `update.php` left waiting, stopped at the time limit with its temporary directory removed. With a simulated `lxc`: snapshot, deletion of the older ones of the same kind (the others stay) and, on failure, stop, restore and start.
+- Release detection in Check Updates against an Ubuntu release list served locally: release offered, none, and no network. `release_upgrade.yml` in `--check` mode: the blocks, non-LTS release, none offered and no network; and with two hosts without `--check`, refused before changing anything. The search for disabled repositories, against test `.list` and `.sources` files. ansible-lint (production profile).
+
 ## 1.3.2 (2026-11-27)
 
 ### Fixes

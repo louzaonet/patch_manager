@@ -373,6 +373,7 @@ def risk_rows(hosts: list[HostInfo], limit: int = 200) -> list[dict[str, Any]]:
             "kev_unfixed": h.kev_unfixed_cves[:5],
             "unfixed_critical": h.unfixed_counts.get("critical", 0),
             "unfixed_high": h.unfixed_counts.get("high", 0),
+            "release_upgrade": h.release_upgrade_to or None,
             "reboot_required": h.reboot_required,
             "report_age_hours": h.report_age_hours,
         }
@@ -440,6 +441,8 @@ def _host_summary(hosts: list[HostInfo]) -> list[dict[str, Any]]:
                                 if n or p in ("critical", "high")},
                     "kev_unfixed": h.kev_unfixed_cves[:3]} if h.unfixed_counts else {}),
                 **({"unfixed_data": h.unfixed_note} if h.unfixed_note else {}),
+                **({"release_upgrade_to": h.release_upgrade_to} if h.release_upgrade_to else {}),
+                **({"release_check": h.release_check_note} if h.release_check_note else {}),
                 } if h.os_group == "ubuntu_servers" else {}),
             "reboot_pending": h.reboot_required,
             "report_age_h": h.report_age_hours,
@@ -572,10 +575,17 @@ async def generate_briefing(state: AgentState) -> dict[str, Any]:
         "with no CVE (tzdata, -dev packages): not a data error. macOS and Windows reports carry no CVE "
         "ids; for them an empty list is normal and NOT a data gap. On an Ubuntu host with no pending "
         "security updates an empty list is normal too.)",
-        "RISK SCORE: it comes from pending security updates, KEV, CVSS of pending CVEs, the inventory "
-        "criticality, the size of the update backlog and pending reboots. Factors ending in "
+        "RISK SCORE: it comes from pending security updates, KEV among the pending or Pro-only CVEs (a "
+        "KEV with no fix yet is not scored), CVSS of pending CVEs, the inventory criticality, the size "
+        "of the update backlog and pending reboots. Factors ending in "
         "\"(not scored)\" are context only: never say they drive a host's risk.",
     ]
+    if any(h.release_upgrade_to for h in hosts):
+        sections.append(
+            "\"release_upgrade_to\" (Ubuntu hosts) is the next Ubuntu release do-release-upgrade offers "
+            "the host. It is not scored and not urgent while the current release is supported; mention "
+            "it once, and say that moving is a separate decision for a person, one host at a time."
+        )
     if any(h.unfixed_counts for h in hosts):
         worst = [h.hostname for h in hosts
                  if h.unfixed_counts.get("critical") or h.unfixed_counts.get("high")]
@@ -583,7 +593,8 @@ async def generate_briefing(state: AgentState) -> dict[str, Any]:
             "\"unfixed\" (Ubuntu hosts) counts CVEs of installed packages that have no fixed version "
             "yet, by Canonical's priority (critical, high, medium, low, negligible); the kernel is not "
             "included. The CVE ids are in each host's report file (unfixed_cves), not in this data: "
-            "that is by design, not a data gap. "
+            "that is by design, not a data gap. There is no patch for them: never recommend patching or "
+            "planning to patch them. "
             + ("No host has critical or high ones: say so plainly when asked about the worst ones."
                if not worst else f"Hosts with critical or high ones: {', '.join(worst[:10])}.")
         )

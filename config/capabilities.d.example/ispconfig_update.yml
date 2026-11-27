@@ -1,0 +1,39 @@
+# Capability manifest: lets the AI propose playbooks/ispconfig_update.yml as a
+# plan. Nothing runs until a person approves it.
+# Field by field explanation: see docker_check.yml in this directory.
+#
+# Install:
+#   1. ispconfig_check.yml (this directory) first: the AI proposes the update
+#      from its reports.
+#   2. Semaphore: template "ISPConfig Update" for playbooks/ispconfig_update.yml,
+#      with "allow overriding the limit". No schedule: it runs from approved plans.
+#   3. For the automatic restore, give each ISPConfig host lxd_host (and
+#      lxd_instance if the LXD name differs) in the inventory. See the README.
+#   4. sudo install -o root -g patchai -m 0640 ispconfig_update.yml /etc/patch-manager/capabilities.d/
+#      and reload.
+
+name: ispconfig_update
+description: >-
+  Updates ISPConfig to the latest published version on the ISPConfig hosts, one
+  at a time: LXD snapshot, update.php with the updater's default answers
+  (reconfigures the services), then checks services, panel and sites, and
+  restores the snapshot if anything that worked stopped working. Use when
+  ispconfig_check reports update_available.
+template: ISPConfig Update
+risk: changes
+limit_group: ispconfig_servers
+params:
+  ispconfig_force:
+    type: bool
+    description: reinstall even if the version is already the latest (after an Ubuntu release upgrade)
+    default: false
+run:
+  wait: false
+  timeout: 300
+  on_request: false
+reports:
+  path: ispconfig-runs/{host}.json
+  max_age_hours: 720
+  max_bytes: 32768
+include_in_analysis: false
+keywords: [actualizar ispconfig, update ispconfig, ispconfig update]

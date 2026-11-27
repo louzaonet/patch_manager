@@ -1,0 +1,35 @@
+---
+# Web stack state of the current host (files/web-status.sh), as a dict, in
+# web_status_<web_status_stage> (before or after). With stage "after" it also
+# compares with web_status_before and sets web_problems:
+#   - a service that was active and no longer is
+#   - php-fpm units running before and none now
+#   - the panel, or a site, that answered without a 5xx and now gives 5xx or nothing
+# A site that already failed before doesn't count: the change didn't break it.
+
+- name: "Read the state of the web stack ({{ web_status_stage }})"
+  ansible.builtin.script:
+    cmd: "web-status.sh {{ ispconfig_panel_port | default(8080) | int }}"
+  register: web_status_raw
+  changed_when: false
+  check_mode: false
+
+- name: "Keep it ({{ web_status_stage }})"
+  ansible.builtin.set_fact:
+    "web_status_{{ web_status_stage }}": >-
+      {%- set out = {'service': {}, 'fpm': 0, 'panel': None, 'site': {}} -%}
+      {%- for line in web_status_raw.stdout_lines -%}
+      {%- set f = line.split('|') -%}
+      {%- if f | length == 3 and f[0] in ['service', 'site'] -%}
+      {%- set _ = out[f[0]].update({f[1]: f[2]}) -%}
+      {%- elif f | length == 3 and f[0] == 'fpm' -%}
+      {%- set _ = out.update({'fpm': f[2] | int}) -%}
+      {%- elif f | length == 3 and f[0] == 'panel' -%}
+      {%- set _ = out.update({'panel': f[2]}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Compare with the state before
+  ansible.builtin.include_tasks: web_compare.yml
+  when: web_status_stage == 'after'

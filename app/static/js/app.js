@@ -402,6 +402,7 @@ function toggleRiskDetail(card, host, cls) {
     if (host.unfixed_critical) noFix.push(`${host.unfixed_critical} critical`);
     if (host.unfixed_high) noFix.push(`${host.unfixed_high} high`);
     if (noFix.length) parts.push(`no fix: ${noFix.join(', ')}`);
+    if (host.release_upgrade) parts.push(`Ubuntu ${host.release_upgrade} available`);
     if (host.reboot_required) parts.push('reboot pending');
     if (host.report_age_hours != null) parts.push(`report ${formatAge(host.report_age_hours)} old`);
     const factors = (host.risk_factors || []).join('; ');

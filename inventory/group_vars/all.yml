@@ -48,6 +48,9 @@ patch_report_enabled: true
 # Package CVEs with no fix yet (Canonical's CVE OVAL, 5-14 MB per release): listed
 # apart in the analysis, never in the risk score.
 # patch_ubuntu_unfixed_cves: true
+# Ubuntu: the next release do-release-upgrade offers each host, reported as
+# release_upgrade_to (check_updates.yml). Moving is release_upgrade.yml.
+# patch_release_check: true
 
 # ─── Maintenance window (optional) ──────────────────────────────────────────
 # Evaluated with the CONTROLLER's local clock. Windows that cross midnight

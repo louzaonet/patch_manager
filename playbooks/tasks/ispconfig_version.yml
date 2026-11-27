@@ -1,0 +1,53 @@
+---
+# Installed and latest ISPConfig version of the current host. Sets
+# ispconfig_installed, ispconfig_latest and ispconfig_state (older | same |
+# newer: the installed version against the latest). Fails if either can't be read.
+#
+# The latest version is the text file the ISPConfig updater itself reads
+# (ispconfig_version_url), fetched once per run on the controller.
+
+- name: Latest ISPConfig version (once, on the controller)
+  ansible.builtin.uri:
+    url: "{{ ispconfig_version_url | default('https://www.ispconfig.org/downloads/ispconfig3_version.txt') }}"
+    return_content: true
+    timeout: 30
+  register: ispconfig_latest_raw
+  delegate_to: localhost
+  run_once: true
+  check_mode: false
+  vars:
+    ansible_become: false
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+- name: Read the installed version
+  ansible.builtin.slurp:
+    src: "{{ ispconfig_dir | default('/usr/local/ispconfig') }}/server/lib/config.inc.php"
+  register: ispconfig_config
+
+- name: Keep both versions
+  ansible.builtin.set_fact:
+    ispconfig_installed: >-
+      {{ ispconfig_config.content | b64decode
+         | regex_search("define\(\s*'ISPC_APP_VERSION'\s*,\s*'([^']+)'", '\1') | default([''], true) | first }}
+    ispconfig_latest: "{{ ispconfig_latest_raw.content | default('') | trim }}"
+
+# The script validates both strings: anything that isn't a version fails here.
+- name: Compare the installed version with the latest
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/files/ispconfig_autoupdate.py"
+      - compare
+      - "{{ ispconfig_installed }}"
+      - "{{ ispconfig_latest }}"
+  register: ispconfig_compare
+  changed_when: false
+  check_mode: false
+  delegate_to: localhost
+  vars:
+    ansible_become: false
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+- name: Keep the result
+  ansible.builtin.set_fact:
+    ispconfig_state: "{{ ispconfig_compare.stdout | trim }}"
