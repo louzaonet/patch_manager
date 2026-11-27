@@ -58,7 +58,12 @@ id semaphore >/dev/null 2>&1 || useradd --system --home-dir "$SEM_HOME" --create
 id patchai >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home \
   --shell /usr/sbin/nologin --groups patchreports patchai
 
-install -d -o semaphore -g patchreports -m 2775 "$REPORTS_DIR" "$REPORTS_DIR/hosts" "$REPORTS_DIR/patch-runs"
+install -d -o semaphore -g patchreports -m 2750 "$REPORTS_DIR" "$REPORTS_DIR/hosts" "$REPORTS_DIR/patch-runs"
+# Reports (package lists, host names) for the patchreports group only. Also
+# fixes what earlier versions left: 0755/0644 and files in group semaphore.
+chgrp -R patchreports "$REPORTS_DIR"
+find "$REPORTS_DIR" -type d -exec chmod 2750 {} +
+find "$REPORTS_DIR" -type f -exec chmod 0640 {} +
 install -d -o semaphore -g semaphore -m 0750 "$SEM_HOME" "$SEM_HOME/tmp"
 install -d -o semaphore -g semaphore -m 0700 "$SEM_HOME/.ssh"
 install -d -o root -g patchai -m 0750 /etc/patch-manager
@@ -171,7 +176,16 @@ fi
 log "Installing Patch Manager AI"
 [[ -d "$APP_DIR/.venv" ]] || python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
-"$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
+# Pinned versions with hashes when they install on this Python; otherwise the
+# ranges of requirements.txt, with a warning.
+if [[ -f "$APP_DIR/requirements.lock" ]] \
+   && "$APP_DIR/.venv/bin/pip" install -q --require-hashes -r "$APP_DIR/requirements.lock"; then
+  log "Dependencies installed from requirements.lock (pinned, hash-checked)"
+else
+  echo "WARNING: requirements.lock could not be used with $(python3 --version 2>&1);" \
+       "installing from requirements.txt (version ranges, no hashes)" >&2
+  "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
+fi
 
 if [[ ! -f /etc/patch-manager/ai.env ]]; then
   APP_PASS="$(head -c18 /dev/urandom | base64 | tr -d '/+=')"

@@ -78,7 +78,8 @@ async def _live_query(
     task_id = task.get("id")
     audit.info("package_query_started", by=requested_by, package=name, limit=limit, task_id=task_id)
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + s.package_query_timeout
+    wait = min(s.package_query_timeout, s.request_wait_max)
+    deadline = loop.time() + wait
     status = ""
     while loop.time() < deadline:
         await asyncio.sleep(POLL_SECONDS)
@@ -90,7 +91,7 @@ async def _live_query(
             break
     else:
         return None, (f"the live query (Semaphore task #{task_id}) was still running after "
-                      f"{int(s.package_query_timeout)} s, so this comes from the inventory")
+                      f"{int(wait)} s, so this comes from the inventory")
 
     reader = ReportReader()
     results = {h: reader.read_query_result(query_id, h) for h in hostnames}

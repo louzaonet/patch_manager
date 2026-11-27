@@ -317,3 +317,15 @@ def test_teams_hmac_rejects_garbage_without_raising(header):
     from app.security import verify_teams_hmac
 
     assert verify_teams_hmac("c2VjcmV0", b"x", header) is False
+
+
+def test_cyclic_inventory_does_not_crash(tmp_path):
+    # YAML anchors can make a group its own descendant (1.4.1).
+    from app.tools.inventory_reader import InventoryReader
+
+    inv = tmp_path / "hosts.yml"
+    inv.write_text("all:\n  children: &g\n    loop:\n      hosts:\n        h1:\n      children: *g\n")
+    reader = InventoryReader.__new__(InventoryReader)
+    reader.inventory_path = inv
+    parsed = reader.parse()
+    assert "h1" in parsed.hosts and parsed.groups["loop"] == {"h1"}

@@ -1,0 +1,21 @@
+---
+# After a change: what worked before (failed_units_before, web_status_before)
+# and doesn't now. Sets post_problems (empty when all is well) and
+# post_failed_units. When something looks broken it waits post_recheck_delay
+# seconds (60 by default; 0 to skip) and looks again, so a service that is
+# still starting is not a reason to restore a snapshot.
+
+- name: First look
+  ansible.builtin.include_tasks: post_checks_once.yml
+
+- name: Look again before calling it broken
+  when:
+    - post_problems | length > 0
+    - post_recheck_delay | default(60) | int > 0
+  block:
+    - name: "Something looks broken, waiting before the second look: {{ post_problems | join('; ') | truncate(200) }}"
+      ansible.builtin.pause:
+        seconds: "{{ post_recheck_delay | default(60) | int }}"
+
+    - name: Second look
+      ansible.builtin.include_tasks: post_checks_once.yml

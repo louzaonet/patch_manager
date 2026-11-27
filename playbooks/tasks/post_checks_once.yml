@@ -1,0 +1,20 @@
+---
+# One look after the change: new failed units and the web stack against the
+# state before. Sets post_failed_units and post_problems. See post_checks.yml.
+
+- name: Failed units now
+  ansible.builtin.include_tasks: failed_units.yml
+  vars:
+    failed_units_stage: after
+
+- name: Web stack now
+  ansible.builtin.include_tasks: web_status.yml
+  vars:
+    web_status_stage: after
+
+- name: What works no longer
+  ansible.builtin.set_fact:
+    post_failed_units: "{{ failed_units_after | difference(failed_units_before | default([])) }}"
+    post_problems: >-
+      {{ failed_units_after | difference(failed_units_before | default([]))
+         | map('regex_replace', '^', 'failed unit ') | list + web_problems | default([]) }}

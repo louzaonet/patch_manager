@@ -490,8 +490,9 @@ def test_docker_update_structure():
     plays = _plays("docker_update.yml")
     assert [p["hosts"] for p in plays] == ["docker_hosts", "docker_hosts"]
     tasks = {t["name"]: t for t in plays[0]["tasks"]}
-    prune = tasks["Remove dangling images (only when every project is OK)"]
+    prune = tasks["Remove the images this run replaced (only when every project is OK)"]
     assert any("FAILED" in cond for cond in prune["when"])  # keep old images when something failed
+    assert "prune" not in str(prune["ansible.builtin.command"])  # 1.4.1: not every dangling image
     project = yaml.safe_load((REPO / "playbooks" / "tasks" / "docker_project.yml").read_text())[0]
     assert project["rescue"], "a failed project must be recorded, not stop the host"
     names = [t["name"] for t in project["block"]]

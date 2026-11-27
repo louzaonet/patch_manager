@@ -22,6 +22,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# /run/patch-ai, for the scheduler lock (RUNTIME_DIRECTORY).
+RuntimeDirectory=patch-ai
+RuntimeDirectoryMode=0700
 PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

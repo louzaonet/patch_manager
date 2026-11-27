@@ -564,8 +564,13 @@ def load_release(codename: str, cache: Path, url_base: str, timeout: float,
             raise OSError(f"{url} is larger than {MAX_DOWNLOAD // 2**20} MB")
         _atomic_write(bz, body)
         if modified:
-            ts = email.utils.parsedate_to_datetime(modified).timestamp()
-            os.utime(bz, (ts, ts))
+            # A malformed Last-Modified (some proxies) only costs the
+            # If-Modified-Since of the next run, not this run's data.
+            try:
+                ts = email.utils.parsedate_to_datetime(modified).timestamp()
+                os.utime(bz, (ts, ts))
+            except (ValueError, TypeError, OverflowError):
+                pass
         status["downloaded"] = True
     except urllib.error.HTTPError as e:
         if e.code != 304:

@@ -45,7 +45,10 @@ class RiskScorer:
         factors: list[str] = []
 
         if host.data_stale:
-            if host.report_found:
+            if host.report_found and host.report_age_hours is None:
+                factors.append("Update report has no valid date (missing or in the future); "
+                               "run Check Updates")
+            elif host.report_found:
                 factors.append(f"Update data is {host.report_age_hours}h old; run Check Updates")
             else:
                 factors.append("No update report yet; run Check Updates")

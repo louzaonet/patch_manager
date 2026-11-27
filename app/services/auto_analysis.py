@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import fcntl
 import os
+import stat
 import tempfile
 from datetime import UTC, datetime, tzinfo
 from typing import Any
@@ -27,7 +28,10 @@ from app.services.mailer import build_report_email, send_email
 logger = structlog.get_logger()
 audit = structlog.get_logger("audit")
 
-LOCK_PATH = os.path.join(tempfile.gettempdir(), "patch-ai-scheduler.lock")
+# systemd's RuntimeDirectory= (/run/patch-ai, only this user can write there);
+# otherwise the temp dir (private in the shipped unit and container).
+LOCK_PATH = os.path.join(os.environ.get("RUNTIME_DIRECTORY", "").split(":")[0] or tempfile.gettempdir(),
+                         "patch-ai-scheduler.lock")
 # Sleep in short chunks so a changed clock (NTP, suspend) can't push a run far away.
 MAX_SLEEP_SECONDS = 60.0
 
@@ -81,7 +85,18 @@ class AutoAnalysis:
         self.scheduler_here = False
 
     def _acquire_lock(self) -> bool:
-        fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+        # O_NOFOLLOW and the owner check: in a shared /tmp another user could
+        # place a file or a link there first and keep the scheduler off.
+        try:
+            fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError as exc:
+            logger.error("scheduler_lock_unusable", path=LOCK_PATH, error=str(exc))
+            return False
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            os.close(fd)
+            logger.error("scheduler_lock_unusable", path=LOCK_PATH, error="not a regular file of this user")
+            return False
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:

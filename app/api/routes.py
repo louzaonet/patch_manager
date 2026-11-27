@@ -395,6 +395,10 @@ async def slack_webhook(request: Request) -> JSONResponse:
     channel_id = form.get("channel_id")
     logger.info("slack_command", user=user_name, text=text[:100])
 
+    if s.slack_users and user_id not in s.slack_users:
+        audit.warning("slack_user_denied", user=user_name, user_id=user_id)
+        return JSONResponse({"response_type": "ephemeral", "text": "You are not allowed to use /patch."})
+
     if not text:
         usage = "Usage: `/patch <request>`, `/patch approve <plan_id>`, `/patch reject <plan_id>`"
         return JSONResponse({"response_type": "ephemeral", "text": usage})
@@ -466,6 +470,11 @@ async def teams_webhook(request: Request) -> JSONResponse:
     text = _teams_text(data.get("text", ""))
     sender_info = data.get("from")
     sender = str(sender_info.get("name", "unknown") if isinstance(sender_info, dict) else "unknown")[:100]
+    if s.teams_users:
+        aad = str(sender_info.get("aadObjectId", "") if isinstance(sender_info, dict) else "").lower()
+        if aad not in s.teams_users:
+            audit.warning("teams_user_denied", user=sender, aad_object_id=aad[:64])
+            return JSONResponse({"type": "message", "text": "You are not allowed to use this bot."})
     if not text:
         return JSONResponse({"type": "message", "text": "Send me a patching request."})
     if _APPROVAL_RE.match(text):

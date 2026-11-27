@@ -242,6 +242,7 @@ class PlanStore:
         settings = get_settings()
         client = SemaphoreClient()
         try:
+            _check_scope_unchanged(plan)
             if plan.kind == "capability":
                 template_name = _check_capability_still_valid(plan)
                 message = f"Plan {plan.id} ({plan.capability}) approved by {by}"
@@ -269,6 +270,37 @@ class PlanStore:
                 logger.exception("plan_execution_error", plan_id=plan_id)
             audit.error("plan_failed", plan_id=plan_id, error=plan.error)
         return plan
+
+
+class ScopeChanged(ValueError):
+    """The plan's limit now covers hosts the approver was not shown."""
+
+
+def _check_scope_unchanged(plan: PendingPlan) -> None:
+    """
+    The limit is a host or group expression, resolved again when Semaphore
+    runs it. If the inventory changed after the plan was made, a group can
+    cover hosts the plan never listed: refuse rather than run on them.
+    Fewer hosts than listed is fine.
+    """
+    from app.agents.nodes import hosts_in_scope
+    from app.agents.state import AgentState
+    from app.tools.inventory_reader import InventoryReader
+
+    listed = set(plan.summary.get("hosts") or [])
+    for phase in plan.summary.get("phases") or []:
+        listed |= set(phase.get("hosts") or [])
+    reader = InventoryReader()
+    parsed = reader.parse()
+    _, all_hosts, _ = reader.build(parsed)
+    state = AgentState(all_hosts=all_hosts, target_hosts=plan.limit,
+                       group_members={g: sorted(m) for g, m in parsed.groups.items()})
+    now = {h.hostname for h in hosts_in_scope(state)}
+    added = sorted(now - listed)
+    if added:
+        shown = ", ".join(added[:10]) + (f" and {len(added) - 10} more" if len(added) > 10 else "")
+        raise ScopeChanged(f"the inventory changed since the plan was made: its limit now also covers "
+                           f"{shown}; ask again")
 
 
 def _check_capability_still_valid(plan: PendingPlan) -> str:

@@ -73,11 +73,52 @@
             update_cache: true
           tags: [always]
 
+        # The holds this playbook sets are written down on the host, so a
+        # package taken off patch_excluded_packages is released next time.
+        # Holds made by hand are never touched. (Rocky uses dnf --exclude,
+        # which lasts only for the run.)
+        - name: Read the packages held by earlier runs
+          ansible.builtin.slurp:
+            src: /var/lib/patch-manager/held-packages
+          register: held_before
+          failed_when: false
+          check_mode: false
+          tags: [always]
+
+        - name: Release the packages no longer excluded
+          ansible.builtin.dpkg_selections:
+            name: "{{ item }}"
+            selection: install
+          loop: >-
+            {{ (held_before.content | default('') | b64decode).splitlines() | select('match', '^[^#\s]') | list
+               | difference(patch_excluded_packages | default([])) }}
+          # A package removed since then has nothing to release.
+          failed_when: false
+          when: not (patch_do_dry_run | bool)
+          tags: [always]
+
         - name: Hold excluded packages
           ansible.builtin.dpkg_selections:
             name: "{{ item }}"
             selection: hold
           loop: "{{ patch_excluded_packages | default([]) }}"
+          when: not (patch_do_dry_run | bool)
+          tags: [always]
+
+        - name: Directory for the record of holds
+          ansible.builtin.file:
+            path: /var/lib/patch-manager
+            state: directory
+            mode: "0755"
+          when: not (patch_do_dry_run | bool)
+          tags: [always]
+
+        - name: Record the packages held by this playbook
+          ansible.builtin.copy:
+            # Never empty: the copy module refuses empty content.
+            content: "# Held by Patch Manager (apply_patches.yml)\n{% for p in patch_excluded_packages | default([]) %}{{ p }}\n{% endfor %}"
+            dest: /var/lib/patch-manager/held-packages
+            mode: "0644"
           when: not (patch_do_dry_run | bool)
           tags: [always]
 
@@ -91,12 +132,27 @@
           check_mode: false
           tags: [always]
 
+        # Security updates: what an upgrade would install with the -security
+        # pocket preferred (-t <codename>-security). Reading the pocket of the
+        # candidate in "apt list" missed a fix in -security when -updates had a
+        # newer version, and could pick that newer (non-security) version.
+        - name: List the security updates (simulated, -security preferred)
+          ansible.builtin.command:
+            argv: [apt-get, -s, -o, Debug::NoLocking=1, -t, "{{ ansible_facts['distribution_release'] }}-security", dist-upgrade]
+          environment:
+            LC_ALL: C
+          register: security_sim
+          changed_when: false
+          check_mode: false
+          tags: [always]
+
+        # "Inst pkg [installed] (new Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [amd64])"
         - name: Select the packages to upgrade
           ansible.builtin.set_fact:
             upgradable_lines: "{{ pre_patch_list.stdout_lines | select('search', '\\[upgradable from') | list }}"
             security_pkgs: >-
-              {{ pre_patch_list.stdout_lines | select('search', '\[upgradable from')
-                 | select('search', '^[^ ]+/[^ ]*-security') | map('regex_replace', '/.*$', '') | list }}
+              {{ security_sim.stdout_lines | select('match', '^Inst \S+ \[')
+                 | select('search', '\(\S+ [^)]*-security') | map('regex_replace', '^Inst ([^ :]+).*$', '\1') | unique | list }}
           tags: [always]
 
         - name: Install all updates
@@ -118,6 +174,8 @@
             name: "{{ security_pkgs }}"
             state: latest
             only_upgrade: true
+            # The -security version, not a newer one from -updates.
+            default_release: "{{ ansible_facts['distribution_release'] }}-security"
           environment:
             DEBIAN_FRONTEND: noninteractive
           when:
@@ -451,7 +509,7 @@
       ansible.builtin.file:
         path: "{{ patch_report_dir }}/patch-runs"
         state: directory
-        mode: "0755"
+        mode: "{{ patch_report_dir_mode | default('2750') }}"
       # The run record is written under --check too; its status says DRY-RUN.
       check_mode: false
       delegate_to: localhost
@@ -465,7 +523,7 @@
       ansible.builtin.copy:
         content: "{{ patch_result | to_nice_json }}\n"
         dest: "{{ patch_report_dir }}/patch-runs/{{ inventory_hostname }}.json"
-        mode: "0644"
+        mode: "{{ patch_report_file_mode | default('0640') }}"
       check_mode: false
       delegate_to: localhost
       vars: *controller_vars
@@ -479,7 +537,8 @@
         port: "{{ smtp_port }}"
         username: "{{ smtp_user | default(omit, true) }}"
         password: "{{ smtp_password | default(omit, true) }}"
-        secure: "{{ smtp_secure }}"
+        # "try" with a login would fall back to sending the password in clear.
+        secure: "{{ 'starttls' if smtp_user and smtp_secure == 'try' else smtp_secure }}"
         from: "{{ email_from }}"
         to: "{{ email_to }}"
         subject: >-

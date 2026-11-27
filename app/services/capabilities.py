@@ -64,6 +64,11 @@ MAX_STRING_PARAM = 200
 # whatever the playbook does with the value afterwards. Refused in every
 # string parameter, whatever its pattern allows.
 JINJA_MARKERS = ("{{", "{%", "{#")
+# A group with a quantifier inside, repeated without a bound: "(a+)+",
+# "(\\w*)*", "([a-z]+){2,}". Python's re backtracks exponentially on those, and
+# the match runs in the event loop. Bounded repeats ("(\\d+\\.){3}") are fine.
+_NESTED_QUANTIFIER = re.compile(r"\((?:[^()\\]|\\.)*(?:[+*]|\{\d*,\d*\})\)\s*(?:[+*]|\{\d+,\})")
+MAX_PATTERN = 200
 
 # Ansible variables that must never come from the AI as extra vars: they
 # control connection, privilege escalation, interpreters and the play itself.
@@ -111,6 +116,9 @@ class ParamSpec(BaseModel):
                 re.compile(self.pattern)
             except re.error as exc:
                 raise ValueError(f"invalid pattern: {exc}") from exc
+            if len(self.pattern) > MAX_PATTERN or _NESTED_QUANTIFIER.search(self.pattern):
+                raise ValueError("pattern too long, or with a repeated group that has its own quantifier "
+                                 "(like (a+)+): that can hang the service; use a bounded repeat")
         elif self.pattern is not None:
             raise ValueError("'pattern' is only for type string")
         if self.type != "int" and (self.min is not None or self.max is not None):

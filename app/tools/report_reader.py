@@ -49,6 +49,24 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+# A few minutes ahead is clock skew between the controller and this service.
+FUTURE_TOLERANCE_HOURS = 0.25
+
+
+def _age_hours(now: datetime, when: datetime | None) -> float | None:
+    """
+    Age in hours, or None when unknown. A date further in the future than the
+    tolerance is unknown too: taken as is, it made a report look fresh
+    forever and pushed every other host into "missed the last check".
+    """
+    if when is None:
+        return None
+    hours = (now - when).total_seconds() / 3600
+    if hours < -FUTURE_TOLERANCE_HOURS:
+        return None
+    return round(max(hours, 0.0), 1)
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         with path.open(encoding="utf-8") as fh:
@@ -123,11 +141,8 @@ class ReportReader:
             path = self._host_file("hosts", host.hostname)
             report = _read_json(path) if path else None
             if report:
-                checked = _parse_time(report.get("checked_at"))
                 host.report_found = True
-                host.report_age_hours = (
-                    round((now - checked).total_seconds() / 3600, 1) if checked else None
-                )
+                host.report_age_hours = _age_hours(now, _parse_time(report.get("checked_at")))
                 host.os_name = _label(report.get("os"))
                 host.update_count = _int(report.get("update_count"))
                 host.security_count = _int(report.get("security_count"))
@@ -202,7 +217,8 @@ class ReportReader:
             return None
         collected = _parse_time(data.get("collected_at"))
         now = now or datetime.now(UTC)
-        age = round((now - collected).total_seconds() / 3600, 1) if collected else -1.0
+        age_or_none = _age_hours(now, collected)
+        age = age_or_none if age_or_none is not None else -1.0
         packages = {
             str(name): str(version)
             for name, version in list(data["packages"].items())[:MAX_PACKAGES]

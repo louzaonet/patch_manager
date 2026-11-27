@@ -195,6 +195,8 @@
           project: "{{ docker_project }}"
           status: "{{ 'PULLED' if docker_mode == 'pull' else 'OK' }}"
           updated_images: "{{ updated_images }}"
+          # The image ids those references had before the pull, for the cleanup.
+          old_image_ids: "{{ updated_images | map('extract', before_ids) | reject('equalto', 'none') | list }}"
           containers: "{{ states }}"
 
   rescue:

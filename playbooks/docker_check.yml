@@ -61,7 +61,7 @@
       ansible.builtin.file:
         path: "{{ patch_report_dir }}/docker-checks"
         state: directory
-        mode: "0755"
+        mode: "{{ patch_report_dir_mode | default('2750') }}"
       delegate_to: localhost
       run_once: true
       check_mode: false
@@ -74,7 +74,7 @@
       ansible.builtin.copy:
         content: "{{ docker_check_report | to_nice_json }}\n"
         dest: "{{ patch_report_dir }}/docker-checks/{{ inventory_hostname }}.json"
-        mode: "0644"
+        mode: "{{ patch_report_file_mode | default('0640') }}"
       delegate_to: localhost
       check_mode: false
       vars:

@@ -1,0 +1,13 @@
+---
+# Failed systemd services of the current host, as a list of unit names, in
+# failed_units_<failed_units_stage> (before or after).
+
+- name: "Failed units, {{ failed_units_stage }}"
+  ansible.builtin.command: systemctl list-units --type=service --state=failed --plain --no-legend  # noqa: command-instead-of-module
+  register: failed_units_raw
+  changed_when: false
+  check_mode: false
+
+- name: "Keep them, {{ failed_units_stage }}"
+  ansible.builtin.set_fact:
+    "failed_units_{{ failed_units_stage }}": "{{ failed_units_raw.stdout_lines | map('split') | map('first') | list }}"

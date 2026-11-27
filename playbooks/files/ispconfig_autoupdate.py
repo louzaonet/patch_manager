@@ -46,6 +46,13 @@ DEFAULT_KEYS = {
 }
 
 
+# Characters that end or change a value in an INI line: ";" and "#" start a
+# comment (the rest of the answer is lost and update.php may fall back to a
+# prompt), quotes and "=" are parsed by the INI reader, "[" and "]" look like
+# a section. Values are short tokens ("default", a port, a hostname).
+_BAD_VALUE_CHARS = set(';#"\'=[]')
+
+
 class IniError(ValueError):
     pass
 
@@ -119,6 +126,8 @@ def build_ini(sample: str, answers: dict[str, object]) -> str:
                 text = str(value)
                 if not text or "\n" in text or "\r" in text:
                     raise IniError(f"{key}: empty or multi-line value")
+                if _BAD_VALUE_CHARS & set(text) or not text.isprintable() or text != text.strip():
+                    raise IniError(f"{key}: the value can't contain ; # quotes = [ ] or surrounding spaces")
                 if sample_value.lower() in _LONG | _SHORT and text.lower() not in (
                         _LONG if sample_value.lower() in _LONG else _SHORT) | {"default"}:
                     raise IniError(f"{key}: {text!r} doesn't match the sample's spelling ({sample_value})")
@@ -149,11 +158,13 @@ def _cmd_ini(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:     # IniError and JSONDecodeError are ValueErrors
         print(f"ispconfig ini: {exc}", file=sys.stderr)
         return 2
-    # 0600 from the start: nothing secret goes in, but it is root's file.
+    # 0600 from the start. Not printed: Semaphore keeps the task output, and
+    # an operator may have put a real password in the answers.
     fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
-    print(text, end="")
+    keys = [line.split("=", 1)[0] for line in text.splitlines()[1:]]
+    print(f"wrote {args.out}: {len(keys)} answers")
     return 0
 
 

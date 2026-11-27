@@ -4,9 +4,19 @@
 # Run as Administrator on each Windows host:
 # (Alternative: Ansible over OpenSSH for Windows, supported since ansible-core 2.18.)
 #   powershell -ExecutionPolicy Bypass -File setup_winrm.ps1
+#   powershell -ExecutionPolicy Bypass -File setup_winrm.ps1 -DnsNames win01,win01.example.lan
+#
+# -DnsNames: the names Ansible uses to reach this host (ansible_host). The
+# certificate is made for them, so Ansible can validate it. Default: the
+# computer name. An IP address is not a valid name here.
+#
+# The certificate is exported (public part only) to
+# C:\ProgramData\patch-manager\winrm-<COMPUTERNAME>.pem. Copy it to the
+# controller and point ansible_winrm_ca_trust_path at it (inventory/hosts.yml).
 # =============================================================================
 
 #Requires -RunAsAdministrator
+param([string[]]$DnsNames = @($env:COMPUTERNAME))
 
 # Stop at the first error. Without this a failed step (no certificate, a
 # listener that could not be created) still ended with "configured successfully".
@@ -26,15 +36,17 @@ Write-Host "[2/6] Preparing the HTTPS certificate..." -ForegroundColor Yellow
 $hostname = $env:COMPUTERNAME
 $certStore = "Cert:\LocalMachine\My"
 $certName = "Ansible WinRM (patch-manager)"
+# Reused only if it covers every name asked for.
 $cert = Get-ChildItem $certStore |
     Where-Object { $_.FriendlyName -eq $certName -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date).AddDays(30) } |
+    Where-Object { $c = $_; -not ($DnsNames | Where-Object { $c.DnsNameList.Unicode -notcontains $_ }) } |
     Sort-Object NotAfter -Descending |
     Select-Object -First 1
 if ($cert) {
     Write-Host "    Reusing certificate $($cert.Thumbprint) (valid until $($cert.NotAfter))"
 } else {
     $cert = New-SelfSignedCertificate `
-        -DnsName $hostname `
+        -DnsName $DnsNames `
         -CertStoreLocation $certStore `
         -FriendlyName $certName `
         -NotAfter (Get-Date).AddYears(5)
@@ -73,6 +85,16 @@ if ($legacy) {
     Write-Host "    Self-signed CN=$hostname certificates possibly left by older runs:" -ForegroundColor Yellow
     $legacy | ForEach-Object { Write-Host "      Remove-Item $certStore\$($_.Thumbprint)   # expires $($_.NotAfter)" }
 }
+
+# 2c. Export the certificate (no private key) for Ansible to validate it.
+$exportDir = Join-Path $env:ProgramData "patch-manager"
+New-Item -ItemType Directory -Force -Path $exportDir | Out-Null
+$pemPath = Join-Path $exportDir "winrm-$hostname.pem"
+$pem = "-----BEGIN CERTIFICATE-----`n" +
+       [Convert]::ToBase64String($cert.RawData, [Base64FormattingOptions]::InsertLineBreaks) +
+       "`n-----END CERTIFICATE-----`n"
+[IO.File]::WriteAllText($pemPath, $pem)
+Write-Host "    Certificate for $($DnsNames -join ', ') exported to $pemPath"
 
 # 3. Configure authentication
 Write-Host "[3/6] Configuring authentication..." -ForegroundColor Yellow
@@ -118,5 +140,6 @@ winrm enumerate winrm/config/Listener
 Write-Host ""
 Write-Host "Test connection from the Ansible server:" -ForegroundColor Yellow
 Write-Host "  ansible windows_servers -m win_ping -i inventory/hosts.yml" -ForegroundColor White
+Write-Host "Copy $pemPath to the controller and set ansible_winrm_ca_trust_path to it." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "✅ WinRM configured successfully on $hostname" -ForegroundColor Green

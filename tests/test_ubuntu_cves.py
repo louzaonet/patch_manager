@@ -244,6 +244,7 @@ class _Server:
         outer = self
         self.requests: list[int] = []
         self.up = True
+        self.last_modified = "Thu, 26 Nov 2026 08:53:49 GMT"
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
@@ -258,7 +259,7 @@ class _Server:
                     return
                 outer.requests.append(200)
                 self.send_response(200)
-                self.send_header("Last-Modified", "Thu, 26 Nov 2026 08:53:49 GMT")
+                self.send_header("Last-Modified", outer.last_modified)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -358,6 +359,13 @@ def test_cached_index_is_rebuilt_when_the_download_changes(tmp_path, server):
     server.close()
     index, status = oval.load_release("resolute", cache, server.url, 5)
     assert status["error"] and index["definitions"][f"{P}:def:1"]["usn"] == "USN-9-9"
+
+
+def test_malformed_last_modified_keeps_the_data(tmp_path, server):
+    # 1.4.1: parsedate_to_datetime raised ValueError and the whole step failed.
+    server.last_modified = "not a date"
+    index, status = oval.load_release("resolute", tmp_path, server.url, 5)
+    assert index is not None and status["downloaded"] and status["error"] is None
 
 
 def test_download_size_is_capped(tmp_path, server, monkeypatch):

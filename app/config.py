@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     semaphore_template_packages: str = Field(default="Package Query", alias="SEMAPHORE_TEMPLATE_PACKAGES")
     # How long a live query may take before the answer falls back to the inventory.
     package_query_timeout: float = Field(default=180.0, alias="PACKAGE_QUERY_TIMEOUT")
+    # Longest a chat request waits for a Semaphore task (capabilities with
+    # run.wait, live package queries). Keep it under the proxy's read timeout
+    # (300 s in the shipped nginx), or the browser gets a 504 while the task
+    # goes on. A longer run.timeout in a manifest is cut to this.
+    request_wait_max: float = Field(default=270.0, ge=10, alias="REQUEST_WAIT_MAX")
     semaphore_timeout: float = Field(default=30.0, alias="SEMAPHORE_TIMEOUT")
 
     # ─── Inventory and host reports ─────────────────────────────────────
@@ -165,6 +170,10 @@ class Settings(BaseSettings):
     slack_default_channel: str = Field(default="#patch-management", alias="SLACK_DEFAULT_CHANNEL")
     # Comma-separated Slack user IDs (U0123...) allowed to approve plans.
     slack_approver_ids: str = Field(default="", alias="SLACK_APPROVER_IDS")
+    # Comma-separated Slack user IDs allowed to use /patch at all (read the
+    # fleet, run read-only checks, ask for plans). Empty: anyone in the
+    # workspace who can run the command. Approvers are always allowed.
+    slack_user_ids: str = Field(default="", alias="SLACK_USER_IDS")
 
     # ─── Microsoft Teams ────────────────────────────────────────────────
     teams_enabled: bool = Field(default=False, alias="TEAMS_ENABLED")
@@ -172,6 +181,9 @@ class Settings(BaseSettings):
     teams_webhook_url: str | None = Field(default=None, alias="TEAMS_WEBHOOK_URL")
     # Security token shown when creating a Teams Outgoing Webhook (base64).
     teams_outgoing_secret: str | None = Field(default=None, alias="TEAMS_OUTGOING_SECRET")
+    # Comma-separated Entra ID object IDs (from.aadObjectId) allowed to talk
+    # to the bot. Empty: anyone who can mention it in the team.
+    teams_user_ids: str = Field(default="", alias="TEAMS_USER_IDS")
 
     # ─── Scheduled analysis and email ───────────────────────────────────
     # Cron expression (minute hour day month weekday) evaluated in
@@ -287,6 +299,17 @@ class Settings(BaseSettings):
     @property
     def slack_approvers(self) -> set[str]:
         return {u.strip() for u in self.slack_approver_ids.split(",") if u.strip()}
+
+    @property
+    def slack_users(self) -> set[str]:
+        """Users allowed to use /patch; empty means everyone."""
+        users = {u.strip() for u in self.slack_user_ids.split(",") if u.strip()}
+        return users | self.slack_approvers if users else set()
+
+    @property
+    def teams_users(self) -> set[str]:
+        """Entra ID object IDs allowed to use the bot; empty means everyone."""
+        return {u.strip().lower() for u in self.teams_user_ids.split(",") if u.strip()}
 
     def startup_problems(self) -> list[str]:
         """Configuration errors that should stop the service from starting."""

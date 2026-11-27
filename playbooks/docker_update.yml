@@ -21,14 +21,15 @@
 # having restarted. A project that doesn't get there within
 # docker_wait_retries x docker_wait_delay seconds is reported as FAILED and
 # left as it is (no rollback); the run goes on with the next project and the
-# host fails at the end. Dangling images are only pruned on hosts where every
-# project is OK, so the previous image is still there for a manual rollback.
+# host fails at the end. The images a project replaced are only removed on
+# hosts where every project is OK, so the previous image is still there for a
+# manual rollback; other dangling images on the host are left alone.
 #
 # Optional host/group vars:
 #   docker_wait_retries: 20         docker_wait_delay: 15   (seconds)
 #   docker_settle_seconds: 20       second look after that (0 = skip)
 #   docker_ignore_services: []      services allowed to be stopped (one-shot jobs)
-#   docker_prune_dangling: true
+#   docker_prune_dangling: true      remove the images this run replaced
 #   docker_service_name: docker     docker_manage_service: true
 # =============================================================================
 
@@ -73,15 +74,23 @@
         loop_var: docker_project
         label: "{{ docker_project }}"
 
-    - name: Remove dangling images (only when every project is OK)
-      ansible.builtin.command: docker image prune --force
+    # Only the images this run replaced, not every dangling image on the host
+    # (other software's images, or ones kept on purpose). An image another
+    # container still uses is refused by Docker and stays.
+    - name: Remove the images this run replaced (only when every project is OK)
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'image', 'rm'] + docker_replaced }}"
       register: docker_prune
-      changed_when: "'Total reclaimed space: 0B' not in docker_prune.stdout"
+      changed_when: docker_prune.rc == 0
+      failed_when: false
+      vars:
+        docker_replaced: "{{ docker_results | map(attribute='old_image_ids', default=[]) | flatten | unique | list }}"
       when:
         - docker_mode == 'update'
         - docker_prune_dangling | default(true) | bool
         - docker_results | length > 0
         - docker_results | selectattr('status', 'equalto', 'FAILED') | list | length == 0
+        - docker_replaced | length > 0
 
 # ─── Reports ────────────────────────────────────────────────────────────────
 - name: "Write Docker reports"
@@ -92,7 +101,7 @@
       ansible.builtin.file:
         path: "{{ patch_report_dir }}/docker-runs"
         state: directory
-        mode: "0755"
+        mode: "{{ patch_report_dir_mode | default('2750') }}"
       delegate_to: localhost
       run_once: true
       check_mode: false
@@ -105,7 +114,7 @@
       ansible.builtin.copy:
         content: "{{ docker_report | to_nice_json }}\n"
         dest: "{{ patch_report_dir }}/docker-runs/{{ inventory_hostname }}.json"
-        mode: "0644"
+        mode: "{{ patch_report_file_mode | default('0640') }}"
       delegate_to: localhost
       check_mode: false
       vars:

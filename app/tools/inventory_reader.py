@@ -74,9 +74,10 @@ class InventoryReader:
         children: dict[str, set[str]] = {}
         try:
             self._walk_group("all", root or {}, {}, parsed, direct, children)
-        except (AttributeError, TypeError, ValueError) as exc:
+        except (AttributeError, TypeError, ValueError, RecursionError) as exc:
             # Valid YAML with the wrong shape (hosts as a list, vars as a
-            # string...). An empty inventory is safer than half of one.
+            # string, groups nested too deep...). An empty inventory is safer
+            # than half of one.
             logger.error("inventory_malformed", path=str(self.inventory_path), error=str(exc))
             return ParsedInventory()
 
@@ -102,8 +103,15 @@ class InventoryReader:
         parsed: ParsedInventory,
         direct: dict[str, set[str]],
         children: dict[str, set[str]],
+        path: frozenset[str] = frozenset(),
     ) -> None:
         """Depth-first walk recording direct hosts, child groups and host vars."""
+        # YAML anchors can build a real cycle (children: {loop: *g}); a group
+        # that is already on the way down is not walked again.
+        if name in path:
+            logger.warning("inventory_cyclic_group", group=name)
+            return
+        path = path | {name}
         group = group or {}
         group_vars = {**inherited_vars, **(group.get("vars") or {})}
         direct.setdefault(name, set())
@@ -115,7 +123,7 @@ class InventoryReader:
 
         for child_name, child in (group.get("children") or {}).items():
             children[name].add(child_name)
-            self._walk_group(child_name, child or {}, group_vars, parsed, direct, children)
+            self._walk_group(child_name, child or {}, group_vars, parsed, direct, children, path)
 
     # ─── Public API ─────────────────────────────────────────────────────
 

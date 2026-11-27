@@ -10,7 +10,9 @@
 #      own sample (tasks/ispconfig_prepare_update.yml)
 #   3. LXD snapshot, when the host has lxd_host (tasks/lxd_snapshot.yml)
 #   4. runs update.php (tasks/ispconfig_run_update.yml)
-#   5. checks the version, the services, the panel and every enabled site
+#   5. checks the version, that no systemd unit failed and that the
+#      services, the panel and every enabled site answer as before; if not,
+#      looks again post_recheck_delay seconds later (60) before giving up
 #   6. on a failure after the snapshot, restores it (tasks/lxd_restore.yml)
 #
 # A host that fails stops the run: the next ones are not touched.
@@ -51,11 +53,12 @@
     - name: Start with an empty result
       ansible.builtin.set_fact:
         ispconfig_run: {status: error, error: null}
-        ispconfig_update_output: ""
+        ispconfig_update_output: []
         lxd_snapshot_name: ""
         lxd_restored: false
         lxd_restore_error: ""
         web_problems: []
+        post_problems: []
         ispconfig_started_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
 
     - name: Versions
@@ -98,6 +101,11 @@
           vars:
             web_status_stage: before
 
+        - name: Failed units before
+          ansible.builtin.include_tasks: tasks/failed_units.yml
+          vars:
+            failed_units_stage: before
+
         # Nothing changes up to here: a failure in these steps restores nothing.
         - name: Download and build the answers file
           ansible.builtin.include_tasks: tasks/ispconfig_prepare_update.yml
@@ -115,15 +123,13 @@
           ansible.builtin.pause:
             seconds: 10
 
-        - name: State of the web stack after
-          ansible.builtin.include_tasks: tasks/web_status.yml
-          vars:
-            web_status_stage: after
+        - name: Compare with the state before
+          ansible.builtin.include_tasks: tasks/post_checks.yml
 
         - name: Stop if something that worked before doesn't now
           ansible.builtin.fail:
-            msg: "After the update: {{ web_problems | join('; ') }}"
-          when: web_problems | length > 0
+            msg: "After the update: {{ post_problems | join('; ') }}"
+          when: post_problems | length > 0
 
         - name: Updated
           ansible.builtin.set_fact:
@@ -142,7 +148,7 @@
               error: >-
                 {{ ((ansible_failed_task.name | default('') ~ ': ' if ansible_failed_task is defined else '')
                     ~ (ansible_failed_result.msg | default('update failed') | string)
-                    ~ ((' (' ~ (ansible_failed_result.stderr | trim | split('\n') | last) ~ ')')
+                    ~ ((' (' ~ ((ansible_failed_result.stderr | trim).splitlines() | last) ~ ')')
                        if ansible_failed_result.stderr | default('') | trim else '')) | truncate(500) }}
 
         - name: Go back to the snapshot
@@ -152,7 +158,7 @@
       ansible.builtin.file:
         path: "{{ patch_report_dir }}/ispconfig-runs"
         state: directory
-        mode: "0755"
+        mode: "{{ patch_report_dir_mode | default('2750') }}"
       delegate_to: localhost
       check_mode: false
       vars:
@@ -164,7 +170,7 @@
       ansible.builtin.copy:
         content: "{{ report | to_nice_json }}\n"
         dest: "{{ patch_report_dir }}/ispconfig-runs/{{ inventory_hostname }}.json"
-        mode: "0644"
+        mode: "{{ patch_report_file_mode | default('0640') }}"
       delegate_to: localhost
       check_mode: false
       vars:
@@ -180,7 +186,7 @@
           to_version: "{{ ispconfig_latest | default(None) or None }}"
           forced: "{{ ispconfig_force | bool }}"
           error: "{{ ispconfig_run.error }}"
-          problems: "{{ web_problems }}"
+          problems: "{{ post_problems }}"
           snapshot: "{{ lxd_snapshot_name or None }}"
           restored: "{{ lxd_restored }}"
           restore_error: "{{ lxd_restore_error or None }}"

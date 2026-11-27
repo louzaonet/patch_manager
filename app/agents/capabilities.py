@@ -26,6 +26,7 @@ import structlog
 from app.agents import nodes
 from app.agents.nodes import hosts_in_scope
 from app.agents.state import AgentState
+from app.config import get_settings
 from app.services.capabilities import (
     Capability,
     CapabilityError,
@@ -88,7 +89,8 @@ async def _run_read_only(cap: Capability, extra_vars: dict[str, Any], limit: str
         return f"Started Semaphore task #{task_id}. Ask again when it has finished to see the results."
 
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + cap.run.timeout
+    wait = min(cap.run.timeout, get_settings().request_wait_max)
+    deadline = loop.time() + wait
     status = ""
     while loop.time() < deadline:
         await asyncio.sleep(POLL_SECONDS)
@@ -99,7 +101,7 @@ async def _run_read_only(cap: Capability, extra_vars: dict[str, Any], limit: str
         if status in FINISHED:
             break
     else:
-        return (f"Semaphore task #{task_id} was still running after {cap.run.timeout} s; "
+        return (f"Semaphore task #{task_id} was still running after {wait:.0f} s; "
                 "the results below may be from an earlier run.")
     if status != "success":
         return (f"Semaphore task #{task_id} ended as '{status}': hosts that failed or were "

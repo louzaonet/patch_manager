@@ -1,5 +1,52 @@
 # Registro de cambios
 
+## 1.4.1 (2026-11-27)
+
+Correcciones de una revisión externa de seguridad y robustez, más un fallo visto en la primera actualización real de ISPConfig.
+
+### Seguridad
+
+- ISPConfig: un valor de `ispconfig_update_answers` con `;`, `#`, comillas, `=`, corchetes o espacios al principio o al final se rechaza. `;` y `#` empiezan un comentario en el fichero de respuestas: la respuesta se cortaba y `update.php` podía volver a preguntar. El fichero ya no se escribe en la salida de la tarea, que Semaphore guarda, por si alguna respuesta lleva una contraseña.
+- ISPConfig: `ispconfig_sha256` (versión → sha256) comprueba el tar.gz descargado, y `ispconfig_require_sha256: true` no instala una versión sin suma. No hemos encontrado sumas publicadas por ISPConfig: las fijas tú.
+- Correo: con `SMTP_SECURE=try` y usuario, si el servidor no ofrece STARTTLS (o alguien en medio quita la oferta) ya no se inicia sesión en claro y el envío falla. Lo mismo en los correos de los playbooks. Solo `never` manda la contraseña en claro. El servicio avisa al arrancar de `try` con usuario.
+- Docker: patch-ai solo acepta `X-Forwarded-For` de la dirección fija de nginx (`PATCH_PROXY_IP`, subred fija `PATCH_NET_SUBNET`, por defecto 172.31.250.10 y 172.31.250.0/24). Antes confiaba en cualquier contenedor de `patch-net`, que podía elegir su dirección y esquivar el freno de intentos fallidos. Hay que recrear la red: `docker compose down && docker compose up -d`.
+- Informes: los directorios se crean 2750 y los ficheros 0640 (`patch_report_dir_mode`, `patch_report_file_mode`). En la instalación nativa son del grupo `patchreports` por el setgid del directorio; `install.sh` corrige permisos y grupo de lo que dejaron versiones anteriores. En Docker siguen en 0755/0644, porque patch-ai corre con otro uid.
+- Aprobación de planes: el límite se vuelve a resolver contra el inventario al aprobar, y si ahora abarca hosts que el plan no listaba, el plan se rechaza.
+- Slack y Teams: `SLACK_USER_IDS` y `TEAMS_USER_IDS` (Object ID de Entra ID) limitan quién puede usar el bot, no solo quién aprueba. Vacíos, todo sigue como antes.
+- Manifiestos: un `pattern` de más de 200 caracteres, o con un grupo con cuantificador repetido sin límite (`(a+)+`), se rechaza al cargar, porque puede bloquear el servicio.
+- WinRM: el inventario de ejemplo valida el certificado del listener (`validate` y `ansible_winrm_ca_trust_path`). `setup_winrm.ps1` acepta `-DnsNames`, hace el certificado para esos nombres y lo exporta a `C:\ProgramData\patch-manager\winrm-<EQUIPO>.pem`.
+- Lock del planificador: se abre con `O_NOFOLLOW` y tiene que ser un fichero normal del usuario del servicio. En la instalación nativa va en `/run/patch-ai` (`RuntimeDirectory=`).
+
+### Correcciones
+
+- ISPConfig Update comprueba también las unidades de systemd que fallan después de la actualización, como ya hacía Release Upgrade. Una caída de Postfix o Dovecot pasaba como correcta.
+- ISPConfig Update y Release Upgrade: si algo falla en las comprobaciones posteriores, esperan `post_recheck_delay` segundos (60) y vuelven a mirar antes de restaurar la snapshot. Un servicio que tardaba en arrancar provocaba una restauración completa.
+- ISPConfig Update y Release Upgrade: el final de la salida de `update.php` y del log de `do-release-upgrade` se guarda como lista de líneas (`output_tail`, `ispconfig_output_tail`, `upgrader_log_tail`). Antes un `\n` quedaba escrito como texto, el recorte a 40 líneas no funcionaba y se guardaba la salida entera. Los mensajes de error toman de verdad la última línea de la salida de errores.
+- Ubuntu, solo seguridad: las actualizaciones de seguridad salen de una actualización simulada con el pocket `-security` preferido (`apt-get -s -t <versión>-security dist-upgrade`) y se instalan con esa preferencia. Antes se miraba el pocket del candidato en `apt list`: una corrección en `-security` se perdía si `-updates` tenía una versión más nueva, y se podía instalar esa versión más nueva que no es de seguridad. Check Updates cuenta igual.
+- Ubuntu: los holds de `patch_excluded_packages` se apuntan en `/var/lib/patch-manager/held-packages` del host, y un paquete que sale de la lista se libera en la siguiente ejecución. Antes quedaban en hold para siempre. Los holds puestos a mano no se tocan; los de versiones anteriores hay que quitarlos una vez con `apt-mark unhold`.
+- Docker Update borra solo las imágenes que ha sustituido, no todas las huérfanas del host.
+- Inventario: un grupo que se contiene a sí mismo mediante anchors de YAML hacía fallar todas las peticiones con `RecursionError`. Ahora se recorre una vez y se avisa en el log.
+- Informes con fecha en el futuro: contaban como recientes para siempre y hacían que el resto de hosts saliera en el correo como "missed the last check". Más de 15 minutos en el futuro cuenta como fecha no válida.
+- OVAL: una cabecera `Last-Modified` malformada hacía fallar el paso entero, y todos los hosts salían con `cve_error`. Una salida que empezaba por `{` pero no era JSON válido hacía fallar el informe de todos los hosts.
+- Esperas de las peticiones (capacidades con `wait`, consultas de paquetes en vivo): como mucho `REQUEST_WAIT_MAX` segundos (270), por debajo del corte de 300 s de nginx. Antes un manifiesto con `timeout: 3600` acababa en un 504 con la tarea en marcha.
+- Sin LLM, la intención por palabras clave entiende también español ("actualiza Bluma", "¿qué actualizaciones hay pendientes?", "solo seguridad", "sin reiniciar"), y un verbo negado ("no actualices, solo dime el riesgo", "don't install") ya no se toma como petición de parchear.
+
+### Cambios
+
+- Dependencias: `requirements.lock` con las versiones exactas con las que pasan los tests (Python 3.12 y 3.13) y el hash de cada fichero. `install.sh` y el Dockerfile instalan desde él con `--require-hashes`; si no sirve para el Python del sistema, `install.sh` avisa y usa `requirements.txt`.
+- macOS: documentado que el recuento de actualizaciones de seguridad es el de las recomendadas, una aproximación.
+
+### Notas
+
+- Los avisos `PHP Warning: Undefined array key "install"` (también `"ssl_cert"` y `"expert"`) que da `update.php` con un fichero de respuestas que solo tiene `[update]` son normales: el propio `update.php` crea esas secciones vacías en la línea siguiente.
+- Sin cambios, por ser de bajo impacto: el cliente HTTP se sigue creando en cada petición, y los datos que envían los hosts siguen llegando al prompt (tratados como datos, escapados en el panel y el correo, y sin que nada se ejecute a partir de lo que escriba el modelo).
+
+### Pruebas
+
+- 42 tests nuevos (337 en total), que pasan con Python 3.13 y, con las versiones del lock, con Python 3.12.
+- En el entorno de pruebas, con ISPConfig, `lxc` y `systemctl` simulados: suma correcta, suma incorrecta y suma obligatoria que falta; una unidad que falla y sigue fallando (se restaura), una que falla unos segundos (no se restaura) y una que ya fallaba antes (no cuenta); ficheros de informe en 2750/0640.
+- Check Updates con una salida OVAL que no es JSON válido (todos los informes se escriben, con `cve_error`) y la detección de actualizaciones de seguridad, que da los mismos paquetes que antes cuando no hay diferencias entre pockets. Holds de `apply_patches.yml`: se ponen, se liberan al salir de la lista y los manuales se quedan.
+
 ## 1.4.0 (2026-11-27)
 
 ### Novedades

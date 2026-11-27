@@ -139,6 +139,19 @@ def test_multiline_values_are_refused():
         isp.build_ini(SAMPLE_333P2, {"ispconfig_port": "8080\nreconfigure_services=no"})
 
 
+@pytest.mark.parametrize("value", ["8080 # x", "abc;def", '"quoted"', "it's", "a=b", "[x]", " 8080", "a\tb"])
+def test_values_that_would_change_the_ini_are_refused(value):
+    # ";" and "#" start an INI comment: the answer would be cut and update.php
+    # could fall back to a prompt.
+    with pytest.raises(isp.IniError, match="can't contain"):
+        isp.build_ini(SAMPLE_333P2, {"ispconfig_port": value})
+
+
+def test_plain_values_pass():
+    ini = isp.build_ini(SAMPLE_333P2, {"ispconfig_port": "8081", "mysql_master_hostname": "db-1.example.com"})
+    assert "ispconfig_port=8081" in ini and "mysql_master_hostname=db-1.example.com" in ini
+
+
 def test_cli_writes_a_private_file(tmp_path):
     sample = tmp_path / "autoinstall.ini.sample"
     sample.write_text(SAMPLE_333P2)
@@ -147,7 +160,9 @@ def test_cli_writes_a_private_file(tmp_path):
                           "--answers", json.dumps(DEFAULT_ANSWERS)], capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
     assert stat.S_IMODE(out.stat().st_mode) == 0o600
-    assert out.read_text() == run.stdout == isp.build_ini(SAMPLE_333P2, DEFAULT_ANSWERS)
+    assert out.read_text() == isp.build_ini(SAMPLE_333P2, DEFAULT_ANSWERS)
+    # The file is not printed: Semaphore keeps the output.
+    assert "answers" in run.stdout and "[update]" not in run.stdout
 
     bad = subprocess.run([sys.executable, str(SCRIPT), "ini", "--sample", str(sample), "--out",  # noqa: S603 (fixed arguments)
                           str(tmp_path / "x.ini"), "--answers", '{"nope": true}'], capture_output=True, text=True)

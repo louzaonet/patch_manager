@@ -4,7 +4,7 @@
 # that directory. Used by ispconfig_update.yml and, after an Ubuntu release
 # upgrade, by release_upgrade.yml. Fails if update.php fails, runs past
 # ispconfig_update_timeout or leaves another version than ispconfig_target
-# installed. Sets ispconfig_update_output (the last lines of its output).
+# installed. Sets ispconfig_update_output (its last 40 lines, as a list).
 
 - name: Run the updater
   block:
@@ -24,9 +24,10 @@
   always:
     - name: Keep the end of the updater output
       ansible.builtin.set_fact:
+        # A list of lines: a "\n" written inside >- is not a newline.
         ispconfig_update_output: >-
-          {{ (((ispconfig_update_run.stdout | default('')) ~ '\n' ~ (ispconfig_update_run.stderr | default('')))
-              | trim | split('\n') | select | list)[-40:] | join('\n') }}
+          {{ ((ispconfig_update_run.stdout_lines | default([]) + ispconfig_update_run.stderr_lines | default([]))
+              | select | list)[-40:] }}
       when: ispconfig_update_run is defined
 
     - name: Remove the temporary directory

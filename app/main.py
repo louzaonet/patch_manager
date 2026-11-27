@@ -22,7 +22,7 @@ from app.security import Principal, require_user
 from app.services.auto_analysis import auto_analysis
 from app.tools.llm_router import get_active_models
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 
 def _configure_logging(level_name: str) -> None:
@@ -61,6 +61,9 @@ async def lifespan(app: FastAPI):
     if s.smtp_user and s.smtp_secure.lower() == "never":
         logger.warning("smtp_cleartext_login",
                        hint="SMTP_USER with SMTP_SECURE=never sends the password in clear")
+    elif s.smtp_user and s.smtp_secure.lower() == "try":
+        logger.warning("smtp_try_with_login",
+                       hint="SMTP_SECURE=try with SMTP_USER: mail fails if the server offers no STARTTLS")
     auto_analysis.start()
     yield
     await auto_analysis.stop()

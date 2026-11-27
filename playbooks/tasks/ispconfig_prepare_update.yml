@@ -5,6 +5,10 @@
 # it and removes the directory. Sets ispconfig_tmp. On failure the directory
 # is removed here and the error goes up.
 #
+# Integrity: TLS to ispconfig.org, plus ispconfig_sha256 when you give it
+# ({"3.3.3p2": "<sha256>"}); ispconfig_require_sha256: true refuses a
+# version without one.
+#
 # The answers file is built on the host from the sample in the downloaded
 # tar.gz (files/ispconfig_autoupdate.py), with ispconfig_default_answers
 # (set by the playbook) and ispconfig_update_answers merged over them.
@@ -19,6 +23,15 @@
         suffix: .ispconfig
       register: ispconfig_tmp
 
+    - name: Stop if a checksum is required and there is none for this version
+      ansible.builtin.fail:
+        msg: >-
+          ispconfig_require_sha256 is set and ispconfig_sha256 has no entry for {{ ispconfig_target }}.
+          Add its sha256 to ispconfig_sha256 after checking the file.
+      when:
+        - ispconfig_require_sha256 | default(false) | bool
+        - ispconfig_target not in (ispconfig_sha256 | default({}))
+
     - name: "Download ISPConfig {{ ispconfig_target }}"
       ansible.builtin.get_url:
         url: >-
@@ -27,6 +40,11 @@
         dest: "{{ ispconfig_tmp.path }}/ispconfig.tar.gz"
         mode: "0600"
         timeout: 120
+        # We found no checksums published by ISPConfig: this checks the
+        # values you put in ispconfig_sha256 (version -> sha256), if any.
+        checksum: >-
+          {{ ('sha256:' ~ ispconfig_sha256[ispconfig_target]) if ispconfig_target in (ispconfig_sha256 | default({}))
+             else omit }}
 
     - name: Unpack it
       ansible.builtin.unarchive:
@@ -65,5 +83,5 @@
       ansible.builtin.fail:
         msg: >-
           {{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('failed') }}
-          {{- (' (' ~ (ansible_failed_result.stderr | trim | split('\n') | last) ~ ')')
+          {{- (' (' ~ ((ansible_failed_result.stderr | trim).splitlines() | last) ~ ')')
               if ansible_failed_result.stderr | default('') | trim else '' }}

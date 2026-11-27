@@ -33,7 +33,10 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/certs:/etc/nginx/certs:ro
-    networks: [patch-net]
+    # Fixed address: patch-ai trusts X-Forwarded-For from this one only.
+    networks:
+      patch-net:
+        ipv4_address: ${PATCH_PROXY_IP:-172.31.250.10}
 
   postgres:
     image: postgres:18-alpine
@@ -88,8 +91,12 @@ services:
       SEMAPHORE_DB_PORT: "5432"
       SEMAPHORE_PLAYBOOK_PATH: /tmp/semaphore/
       # Variables passed through to Ansible tasks (used by inventory/group_vars/all.yml)
-      SEMAPHORE_FORWARDED_ENV_VARS: '["EMAIL_ENABLED","SMTP_HOST","SMTP_PORT","SMTP_USER","SMTP_PASSWORD","SMTP_SECURE","PATCH_REPORT_DIR"]'
+      SEMAPHORE_FORWARDED_ENV_VARS: '["EMAIL_ENABLED","SMTP_HOST","SMTP_PORT","SMTP_USER","SMTP_PASSWORD","SMTP_SECURE","PATCH_REPORT_DIR","PATCH_REPORT_DIR_MODE","PATCH_REPORT_FILE_MODE"]'
       PATCH_REPORT_DIR: /var/lib/patch-manager/reports
+      # patch-ai (uid 10001) shares no group with Semaphore here, so the
+      # reports stay world-readable inside the private volume.
+      PATCH_REPORT_DIR_MODE: "0755"
+      PATCH_REPORT_FILE_MODE: "0644"
     volumes:
       # Repository content Ansible needs, read-only (config/ secrets stay out).
       # In Semaphore: repository URL /opt/patch-manager, File inventory
@@ -119,6 +126,10 @@ services:
       SEMAPHORE_URL: http://semaphore:3000
       INVENTORY_PATH: /opt/patch-manager/inventory/hosts.yml
       REPORTS_PATH: /var/lib/patch-manager/reports
+      # uvicorn takes the client address from X-Forwarded-For only when the
+      # request comes from nginx; any other container on patch-net can't
+      # choose its address (and get around the failed-login throttle).
+      FORWARDED_ALLOW_IPS: ${PATCH_PROXY_IP:-172.31.250.10}
     volumes:
       # Only what the service needs; no secrets from config/ are mounted.
       - ../inventory:/opt/patch-manager/inventory:ro
@@ -140,3 +151,8 @@ volumes:
 networks:
   patch-net:
     driver: bridge
+    # A fixed subnet for nginx's fixed address. Change both with
+    # PATCH_NET_SUBNET / PATCH_PROXY_IP in docker/.env if it clashes.
+    ipam:
+      config:
+        - subnet: ${PATCH_NET_SUBNET:-172.31.250.0/24}

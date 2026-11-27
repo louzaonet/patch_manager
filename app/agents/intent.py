@@ -217,19 +217,46 @@ def wants_live(message: str) -> bool:
     return bool(_LIVE_RE.search(message.lower()))
 
 
+# English and Spanish. Spanish verbs are matched as whole words, so that
+# "actualiza" (do it) is a verb and "actualizaciones" (updates) is not.
+_ES_APPLY_VERBS = (r"aplica|aplicar|aplique|instala|instalar|instale|actualiza|actualizar|actualice|"
+                   r"parchea|parchear|parchee|despliega|desplegar|"
+                   # with a pronoun: actualízalo, instálalas, aplícalos, parchéalo
+                   r"actualíza\w+|actualizarl\w+|instála\w+|instalarl\w+|aplíca\w+|aplicarl\w+|parchéa\w+|"
+                   r"parchearl\w+|despliéga\w+")
+_ES_UPDATES = r"actualizaci(?:o|ó)n(?:es)?|parches?"
 _KEYWORDS: list[tuple[str, str]] = [
-    (r"\b(status|progress|running|last (run|job|task))\b", "status"),
-    (r"\b(apply|install|upgrade|deploy)\b|\bplan\b.*\b(patch|update)", "apply_patches"),
-    (r"\b(risk|vulnerab|cve|exposure|exploit)", "analyze_risk"),
-    (r"\b(report|summary|summari[sz]e|briefing)\b", "generate_report"),
+    (r"\b(status|progress|running|last (run|job|task)|estado|en curso|progreso|"
+     r"(?:última|ultima|último|ultimo) (?:tarea|ejecución|ejecucion|trabajo))\b", "status"),
+    (r"\b(apply|install|upgrade|deploy)\b|\bplan\b.*\b(patch|update)"
+     rf"|\b({_ES_APPLY_VERBS})\b|\bplan\b.*\b(parche|actualizaci)", "apply_patches"),
+    (r"\b(risk|vulnerab|cve|exposure|exploit|riesgo|exposici|explot)", "analyze_risk"),
+    (r"\b(report|summary|summari[sz]e|briefing|informe|resumen|reporte)\b", "generate_report"),
     (r"\b(pending|available|outdated|outstanding|missing|check|list|show|which|how many)\b"
      r".*\b(updates?|patch(?:es)?)\b"
-     r"|\b(updates?|patch(?:es)?)\b.*\b(pending|available|outstanding)\b", "check_updates"),
-    (r"\bpatch(?:es|ing)?\b", "apply_patches"),
+     r"|\b(updates?|patch(?:es)?)\b.*\b(pending|available|outstanding)\b"
+     r"|\b(pendientes?|disponibles?|hay|lista|muestra|comprueba|revisa|cu(?:a|á)ntas?|cu(?:a|á)ntos?|"
+     rf"qu(?:e|é) hosts?)\b.*\b({_ES_UPDATES})\b"
+     rf"|\b({_ES_UPDATES})\b.*\b(pendientes?|disponibles?)\b", "check_updates"),
+    (r"\bpatch(?:es|ing)?\b|\b(parche|parches|parcheo|parcheado)\b", "apply_patches"),
 ]
+
+# "don't install, just tell me the risk" / "no actualices, solo dime el
+# riesgo": a negated action verb is not a request for that action.
+_NEGATED_ACTION = re.compile(
+    r"\b(?:no|don'?t|do not|never|nunca|sin)\s+(?:\w+\s+){0,2}?"
+    r"(?:apply\w*|install\w*|upgrade\w*|deploy\w*|patch\w*|apl[ií]c\w*|inst[aá]l\w*|actualic\w*|"
+    r"actuali[zí]\w*|parch[eé]\w*|despl[eé]g\w*|despli[eé]g\w*)"
+)
 
 
 _APPLY_RE = re.compile(_KEYWORDS[1][0])
+_SECURITY_ONLY_RE = re.compile(r"security[ -]only|only security|security patches|"
+                               r"s(?:o|ó)lo (?:los |las )?(?:parches |actualizaciones )?(?:de )?seguridad|"
+                               r"(?:parches|actualizaciones) de seguridad")
+_DRY_RUN_RE = re.compile(r"dry[ -]?run|simulat|simula|en seco|sin aplicar")
+_NO_REBOOT_RE = re.compile(r"no[ -]reboot|without reboot|don'?t reboot|prevent reboot|"
+                           r"sin reinici|no reinici")
 _RUN_RE = re.compile(r"\b(run|launch|execute|start|trigger|now|lanza|lanzar|ejecuta|ejecutar|arranca|"
                      r"haz|ahora)\b")
 
@@ -248,6 +275,8 @@ def keyword_intent(
 ) -> Intent:
     """Deterministic fallback used when the LLM is unavailable."""
     low = message.lower()
+    # Matching runs on the text without negated action verbs.
+    acts = _NEGATED_ACTION.sub(" ", low)
     action = "ask_question"
     package = package_from_text(low)
     capability = None
@@ -256,13 +285,13 @@ def keyword_intent(
     else:
         # An explicit patching verb wins over a capability keyword: "apply
         # patches on the docker hosts" is about patching.
-        if not _APPLY_RE.search(low):
+        if not _APPLY_RE.search(acts):
             capability = capability_from_text(low, capabilities or [])
         if capability:
             action = "capability"
         else:
             for pattern, name in _KEYWORDS:
-                if re.search(pattern, low):
+                if re.search(pattern, acts):
                     action = name
                     break
     target = next(
@@ -273,9 +302,9 @@ def keyword_intent(
     return Intent(
         action=action,
         target_hosts=target,
-        security_only=bool(re.search(r"security[ -]only|only security|security patches", low)),
-        dry_run=bool(re.search(r"dry[ -]?run|simulat", low)),
-        no_reboot=bool(re.search(r"no[ -]reboot|without reboot|don'?t reboot|prevent reboot", low)),
+        security_only=bool(_SECURITY_ONLY_RE.search(low)),
+        dry_run=bool(_DRY_RUN_RE.search(low)),
+        no_reboot=bool(_NO_REBOOT_RE.search(low)),
         package=package,
         live=bool(package) and wants_live(low),
         capability=capability,

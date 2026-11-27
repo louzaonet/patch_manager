@@ -295,12 +295,20 @@ def send_email(msg: EmailMessage, settings: Settings) -> None:
             smtp = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=settings.smtp_timeout)
         with smtp:
             smtp.ehlo()
+            encrypted = mode == "always"
             if mode in ("starttls", "try"):
                 if smtp.has_extn("starttls"):
                     smtp.starttls(context=context)
                     smtp.ehlo()
+                    encrypted = True
                 elif mode == "starttls":
                     raise MailError("the SMTP server does not offer STARTTLS (set SMTP_SECURE=try or never)")
+            # "try" falls back to plain text, and someone in the middle can
+            # strip the STARTTLS offer to get that: never log in like that.
+            # Sending the password in clear takes SMTP_SECURE=never.
+            if settings.smtp_user and not encrypted and mode == "try":
+                raise MailError("the SMTP server offered no STARTTLS; not sending SMTP_PASSWORD in clear "
+                                "(SMTP_SECURE=never allows it)")
             if settings.smtp_user:
                 smtp.login(settings.smtp_user, settings.smtp_password)
             smtp.send_message(msg)

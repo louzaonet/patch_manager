@@ -38,6 +38,18 @@
       register: apt_upgradable
       changed_when: false
 
+    # Which of them are security updates: an upgrade simulated with the
+    # -security pocket preferred, as apply_patches.yml installs them. Taking
+    # the pocket of the candidate in "apt list" missed a fix in -security when
+    # -updates had a newer version.
+    - name: List the security updates (simulated, -security preferred)
+      ansible.builtin.command:
+        argv: [apt-get, -s, -o, Debug::NoLocking=1, -t, "{{ ansible_facts['distribution_release'] }}-security", dist-upgrade]
+      environment:
+        LC_ALL: C
+      register: apt_security_sim
+      changed_when: false
+
     # Installed packages, for "which version of X do we have?" in the AI
     # service. Only lines in state "ii" (installed) are kept.
     - name: List installed packages
@@ -94,7 +106,7 @@
           update_count: "{{ upgradable | length }}"
           security_count: "{{ security | length }}"
           packages: "{{ upgradable | map('regex_replace', '/.*$', '') | list }}"
-          security_packages: "{{ security | map('regex_replace', '/.*$', '') | list }}"
+          security_packages: "{{ security }}"
           cves: []   # filled on the controller from the OVAL data, see the last play
           reboot_required: "{{ reboot_flag.stat.exists }}"
           # e.g. "26.04.1 LTS"; null when none is offered. release_check_error
@@ -116,7 +128,10 @@
         # the list can't be downloaded: the text tells them apart.
         release_text: "{{ (release_check.stdout | default('')) ~ '\n' ~ (release_check.stderr | default('')) }}"
         offered: "{{ release_text | regex_findall(\"New release '([^']+)' available\") }}"
-        security: "{{ upgradable | select('search', '^[^ ]+/[^ ]*-security') | list }}"
+        # "Inst pkg [installed] (new Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [amd64])"
+        security: >-
+          {{ apt_security_sim.stdout_lines | select('match', '^Inst \S+ \[')
+             | select('search', '\(\S+ [^)]*-security') | map('regex_replace', '^Inst ([^ :]+).*$', '\1') | unique | list }}
 
 # ─── Rocky Linux ────────────────────────────────────────────────────────────
 - name: "Check pending updates: Rocky Linux"
@@ -225,6 +240,8 @@
           os: "macOS {{ ansible_facts['distribution_version'] | default('') }}"
           checked_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
           update_count: "{{ labels | length }}"
+          # An approximation: softwareupdate has no security flag, and
+          # "Recommended: YES" also covers updates that fix no vulnerability.
           security_count: "{{ recommended | length }}"
           packages: "{{ labels }}"
           security_packages: "{{ recommended }}"
@@ -282,7 +299,7 @@
       ansible.builtin.file:
         path: "{{ patch_report_dir }}/{{ item }}"
         state: directory
-        mode: "0755"
+        mode: "{{ patch_report_dir_mode | default('2750') }}"
       loop: [hosts, patch-runs, packages]
       delegate_to: localhost
       run_once: true
@@ -296,7 +313,7 @@
       ansible.builtin.copy:
         content: "{{ package_report | to_json }}\n"
         dest: "{{ patch_report_dir }}/packages/{{ inventory_hostname }}.json"
-        mode: "0644"
+        mode: "{{ patch_report_file_mode | default('0640') }}"
       delegate_to: localhost
       vars:
         <<: *controller_vars
@@ -347,18 +364,33 @@
         - patch_ubuntu_cves | default(true) | bool
         - oval_hosts | length > 0
 
+    # Parsed in its own task: invalid JSON (a cut output) inside the report
+    # template would fail the report of every host.
+    - name: Read the OVAL result
+      when:
+        - patch_report_enabled | bool
+        - host_report is defined
+      block:
+        - name: Parse it
+          ansible.builtin.set_fact:
+            oval: >-
+              {{ oval_run.stdout | from_json
+                 if (oval_run.rc | default(1)) == 0 and (oval_run.stdout | default('')).startswith('{')
+                 else {} }}
+      rescue:
+        - name: Not valid JSON
+          ansible.builtin.set_fact:
+            oval: {}
+            oval_parse_error: "the OVAL step printed invalid JSON"
+
     - name: Write JSON report on the controller
       ansible.builtin.copy:
         content: "{{ host_report | combine(cve_fields) | to_nice_json }}\n"
         dest: "{{ patch_report_dir }}/hosts/{{ inventory_hostname }}.json"
-        mode: "0644"
+        mode: "{{ patch_report_file_mode | default('0640') }}"
       delegate_to: localhost
       vars:
         <<: *controller_vars
-        oval: >-
-          {{ oval_run.stdout | from_json
-             if (oval_run.rc | default(1)) == 0 and (oval_run.stdout | default('')).startswith('{')
-             else {} }}
         cve_fields: >-
           {%- if host_report.os_group | default('') != 'ubuntu_servers'
                  or not (patch_ubuntu_cves | default(true) | bool) -%}
@@ -368,8 +400,9 @@
           {%- else -%}
           {{ {'cve_source': None,
               'cve_error': (oval.errors | default({}))[inventory_hostname]
-                           | default(((oval_run.stderr | default('', true) | trim
-                                       or 'OVAL step did not run').splitlines() | last)[-300:], true)} }}
+                           | default(oval_parse_error | default('', true)
+                                     or ((oval_run.stderr | default('', true) | trim
+                                          or 'OVAL step did not run').splitlines() | last)[-300:], true)} }}
           {%- endif -%}
       when:
         - patch_report_enabled | bool
@@ -381,7 +414,8 @@
         port: "{{ smtp_port }}"
         username: "{{ smtp_user | default(omit, true) }}"
         password: "{{ smtp_password | default(omit, true) }}"
-        secure: "{{ smtp_secure }}"
+        # "try" with a login would fall back to sending the password in clear.
+        secure: "{{ 'starttls' if smtp_user and smtp_secure == 'try' else smtp_secure }}"
         from: "{{ email_from }}"
         to: "{{ email_to }}"
         subject: "{{ email_subject_prefix }} Pending updates report {{ now().strftime('%Y-%m-%d') }}"

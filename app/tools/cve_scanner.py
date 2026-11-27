@@ -29,8 +29,9 @@ from app.config import get_settings
 
 logger = structlog.get_logger()
 
-# Keyword per OS family for the context search. One term each: NVD
-# keywordSearch ANDs all words, so long keyword lists return nothing.
+# One search string per OS family for the context search. NVD keywordSearch
+# ANDs every word in it, so each string is a single product name, and a list
+# of alternatives in one string would return nothing.
 OS_CONTEXT_KEYWORDS: dict[str, str] = {
     "ubuntu_servers": "Ubuntu",
     "rocky_servers": "Red Hat Enterprise Linux",

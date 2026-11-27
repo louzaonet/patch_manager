@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.4.1 (2026-11-27)
+
+Fixes from an external security and robustness review, plus a bug seen in the first real ISPConfig update.
+
+### Security
+
+- ISPConfig: a value in `ispconfig_update_answers` with `;`, `#`, quotes, `=`, brackets or leading/trailing spaces is refused. `;` and `#` start a comment in the answers file: the answer was cut and `update.php` could ask again. The file is no longer written to the task output, which Semaphore keeps, in case an answer holds a password.
+- ISPConfig: `ispconfig_sha256` (version → sha256) checks the downloaded tar.gz, and `ispconfig_require_sha256: true` refuses a version without one. We found no checksums published by ISPConfig: you pin them.
+- Email: with `SMTP_SECURE=try` and a user, if the server offers no STARTTLS (or someone in the middle strips the offer) there is no cleartext login any more and the mail fails. The same in the playbooks' emails. Only `never` sends the password in clear. The service warns at startup about `try` with a user.
+- Docker: patch-ai only takes `X-Forwarded-For` from nginx's fixed address (`PATCH_PROXY_IP`, fixed subnet `PATCH_NET_SUBNET`, by default 172.31.250.10 and 172.31.250.0/24). It used to trust any container on `patch-net`, which could pick its address and get around the failed-login throttle. The network has to be recreated: `docker compose down && docker compose up -d`.
+- Reports: directories are created 2750 and files 0640 (`patch_report_dir_mode`, `patch_report_file_mode`). In the native install they get group `patchreports` from the directory's setgid; `install.sh` fixes the mode and group of what earlier versions left. In Docker they stay 0755/0644, as patch-ai runs with another uid.
+- Plan approval: the limit is resolved again against the inventory on approval, and if it now covers hosts the plan didn't list, the plan is refused.
+- Slack and Teams: `SLACK_USER_IDS` and `TEAMS_USER_IDS` (Entra ID object IDs) limit who can use the bot, not only who approves. Empty, nothing changes.
+- Manifests: a `pattern` over 200 characters, or with a quantified group repeated without a bound (`(a+)+`), is refused on load, as it can block the service.
+- WinRM: the example inventory validates the listener certificate (`validate` and `ansible_winrm_ca_trust_path`). `setup_winrm.ps1` takes `-DnsNames`, makes the certificate for those names and exports it to `C:\ProgramData\patch-manager\winrm-<COMPUTER>.pem`.
+- Scheduler lock: opened with `O_NOFOLLOW`, and it must be a regular file of the service user. In the native install it lives in `/run/patch-ai` (`RuntimeDirectory=`).
+
+### Fixes
+
+- ISPConfig Update also checks the systemd units that fail after the update, as Release Upgrade already did. A Postfix or Dovecot crash passed as fine.
+- ISPConfig Update and Release Upgrade: when a post-change check fails, they wait `post_recheck_delay` seconds (60) and look again before restoring the snapshot. A service slow to start triggered a full restore.
+- ISPConfig Update and Release Upgrade: the end of the `update.php` output and of the `do-release-upgrade` log is kept as a list of lines (`output_tail`, `ispconfig_output_tail`, `upgrader_log_tail`). A `\n` used to stay as text, the cut to 40 lines didn't work and the whole output was kept. Error messages now really take the last line of the error output.
+- Ubuntu, security only: security updates come from an upgrade simulated with the `-security` pocket preferred (`apt-get -s -t <codename>-security dist-upgrade`) and are installed with that preference. The pocket of the candidate in `apt list` used to decide: a fix in `-security` was missed when `-updates` had a newer version, and that newer non-security version could be installed. Check Updates counts the same way.
+- Ubuntu: holds from `patch_excluded_packages` are recorded in `/var/lib/patch-manager/held-packages` on the host, and a package that leaves the list is released on the next run. They used to stay held forever. Holds set by hand are never touched; those from earlier versions have to be released once with `apt-mark unhold`.
+- Docker Update removes only the images it replaced, not every dangling image on the host.
+- Inventory: a group containing itself through YAML anchors made every request fail with `RecursionError`. Now it is walked once and logged.
+- Reports dated in the future counted as fresh forever and made every other host show up in the email as "missed the last check". More than 15 minutes ahead counts as an invalid date.
+- OVAL: a malformed `Last-Modified` header failed the whole step, and every host got `cve_error`. An output starting with `{` that was not valid JSON failed the report of every host.
+- Request waits (capabilities with `wait`, live package queries): at most `REQUEST_WAIT_MAX` seconds (270), under nginx's 300 s cut. A manifest with `timeout: 3600` used to end in a 504 with the task still running.
+- Without an LLM, keyword intent also understands Spanish ("actualiza Bluma", "¿qué actualizaciones hay pendientes?", "solo seguridad", "sin reiniciar"), and a negated verb ("don't install, just tell me the risk", "no actualices") is no longer taken as a request to patch.
+
+### Changes
+
+- Dependencies: `requirements.lock` with the exact versions the tests pass with (Python 3.12 and 3.13) and each file's hash. `install.sh` and the Dockerfile install from it with `--require-hashes`; if it doesn't fit the system's Python, `install.sh` warns and uses `requirements.txt`.
+- macOS: documented that the count of security updates is the count of recommended ones, an approximation.
+
+### Notes
+
+- The `PHP Warning: Undefined array key "install"` warnings (also `"ssl_cert"` and `"expert"`) that `update.php` gives with an answers file holding only `[update]` are normal: `update.php` itself creates those sections empty on the next line.
+- Left as is, being low impact: the HTTP client is still created per request, and data sent by the hosts still reaches the prompt (handled as data, escaped in the dashboard and email, and nothing runs from what the model writes).
+
+### Tests
+
+- 42 new tests (337 in total), passing on Python 3.13 and, with the lock's versions, on Python 3.12.
+- In the test environment, with ISPConfig, `lxc` and `systemctl` simulated: right checksum, wrong checksum and a required checksum missing; a unit that fails and keeps failing (restored), one that fails for a few seconds (not restored) and one that already failed before (not counted); report files at 2750/0640.
+- Check Updates with an OVAL output that isn't valid JSON (every report is written, with `cve_error`) and the security update detection, which gives the same packages as before when the pockets don't differ. `apply_patches.yml` holds: set, released when off the list, manual ones kept.
+
 ## 1.4.0 (2026-11-27)
 
 ### New

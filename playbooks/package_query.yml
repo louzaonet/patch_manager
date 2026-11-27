@@ -92,7 +92,7 @@
       ansible.builtin.file:
         path: "{{ patch_report_dir }}/package-queries/{{ package_query_id }}"
         state: directory
-        mode: "0755"
+        mode: "{{ patch_report_dir_mode | default('2750') }}"
       run_once: true
       delegate_to: localhost
       vars: *controller_vars
@@ -102,7 +102,7 @@
       ansible.builtin.copy:
         content: "{{ query_result | to_nice_json }}\n"
         dest: "{{ patch_report_dir }}/package-queries/{{ package_query_id }}/{{ inventory_hostname }}.json"
-        mode: "0644"
+        mode: "{{ patch_report_file_mode | default('0640') }}"
       delegate_to: localhost
       vars:
         <<: *controller_vars

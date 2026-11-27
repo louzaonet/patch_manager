@@ -38,6 +38,11 @@ patch_security_only: "{{ 'security_only' in ansible_run_tags }}"
 # Written on the controller (the Semaphore host/container), one file per host.
 patch_report_dir: "{{ lookup('ansible.builtin.env', 'PATCH_REPORT_DIR', default='/var/lib/patch-manager/reports') }}"
 patch_report_enabled: true
+# Reports hold package lists and host names: readable by the service's group
+# only. Directories are setgid so new files take that group (patchreports in
+# the native install). Docker sets 0755/0644 (patch-ai runs with another uid).
+patch_report_dir_mode: "{{ lookup('ansible.builtin.env', 'PATCH_REPORT_DIR_MODE', default='2750') }}"
+patch_report_file_mode: "{{ lookup('ansible.builtin.env', 'PATCH_REPORT_FILE_MODE', default='0640') }}"
 # Ubuntu: CVEs fixed by the pending updates, from Canonical's USN OVAL data,
 # checked on the controller (check_updates.yml). The controller needs HTTPS
 # access to the URL below; the files are cached and only downloaded when they
