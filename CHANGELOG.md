@@ -1,5 +1,16 @@
 # Registro de cambios
 
+## 1.3.2 (2026-11-27)
+
+### Correcciones
+
+- El factor de riesgo de los CVE solo con Ubuntu Pro lleva "(not scored)" cuando ninguno está en KEV, y el prompt explica de dónde sale la nota y que esos factores son solo contexto. El resumen decía que el riesgo venía de los CVE solo con Pro, cuando lo que separaba unos hosts de otros era la criticidad del inventario.
+- Prompt: en un host Ubuntu sin actualizaciones de seguridad pendientes, una lista de CVE vacía es lo normal, y los identificadores de los CVE solo con Pro están en el informe de cada host (`cves_pro_only`). El modelo presentaba las dos cosas como datos que faltaban.
+
+### Pruebas
+
+- 1 test nuevo (260 en total) con un host de criticidad alta sin nada pendiente y 107 CVE solo con Pro.
+
 ## 1.3.1 (2026-11-26)
 
 ### Correcciones

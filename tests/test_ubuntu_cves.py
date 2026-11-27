@@ -485,7 +485,7 @@ def test_scoring_keeps_pro_only_apart_unless_kev():
     with_pro = HostInfo(**{**base.__dict__, "cve_pro_only_ids": ["CVE-2026-0002"] * 1})
     s = RiskScorer()
     assert s.score_host(with_pro).risk_score == s.score_host(base).risk_score
-    assert "1 CVE(s) fixable only with Ubuntu Pro" in s.score_host(with_pro).risk_factors
+    assert "1 CVE(s) fixable only with Ubuntu Pro (not scored)" in s.score_host(with_pro).risk_factors
     kev = HostInfo(**{**with_pro.__dict__, "kev_pro_only_cves": ["CVE-2026-0002"]})
     scored = s.score_host(kev)
     assert scored.risk_score >= 80
@@ -649,3 +649,23 @@ async def test_prompt_explains_unfixed_counts_without_critical_or_high(env, fake
                                              all_hosts=[h]))
     assert "Hosts with critical or high ones: Bluma." in fake.prompts["generate_briefing"][0]
 
+
+
+async def test_prompt_says_what_drives_the_risk(env, fake_llm):
+    # 1.3.2: the model named Pro-only CVEs as what drove the risk, and treated an
+    # empty CVE list on Ubuntu hosts with nothing pending as missing data.
+    from app.agents import nodes
+    from app.agents.state import ActionType, AgentState, HostInfo
+    from app.tools.risk_scorer import RiskScorer
+
+    h = RiskScorer().score_host(HostInfo(
+        hostname="Bluma", ip="x", os_group="ubuntu_servers", report_found=True, report_age_hours=1.0,
+        criticality="high", cve_source="ubuntu-usn-oval", cve_pro_only_ids=["CVE-2026-0002"] * 107))
+    assert "107 CVE(s) fixable only with Ubuntu Pro (not scored)" in h.risk_factors
+    fake = fake_llm()
+    await nodes.generate_briefing(AgentState(user_message="x", action=ActionType.ANALYZE_RISK,
+                                             all_hosts=[h]))
+    prompt = fake.prompts["generate_briefing"][0]
+    assert '"(not scored)" are context only' in prompt
+    assert "no pending security updates an empty list is normal too" in prompt
+    assert "ids are in each host's report file (cves_pro_only)" in prompt

@@ -77,7 +77,11 @@ class RiskScorer:
             factors.append(f"Critical CVE pending (CVSS {max_cvss})")
         elif max_cvss >= 7.0:
             factors.append(f"High-severity CVE pending (CVSS {max_cvss})")
-        if host.cve_pro_only_ids:
+        if host.cve_pro_only_ids and not host.kev_pro_only_cves:
+            # Listed for context; it adds nothing to the score (the model used to
+            # name it as what drove the risk).
+            factors.append(f"{len(host.cve_pro_only_ids)} CVE(s) fixable only with Ubuntu Pro (not scored)")
+        elif host.cve_pro_only_ids:
             factors.append(f"{len(host.cve_pro_only_ids)} CVE(s) fixable only with Ubuntu Pro")
         if host.kernel_not_covered:
             factors.append("Running kernel not covered by Canonical's CVE data")

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.2 (2026-11-27)
+
+### Fixes
+
+- The risk factor for CVEs fixable only with Ubuntu Pro carries "(not scored)" when none is in KEV, and the prompt explains where the score comes from and that those factors are context only. The summary said the risk came from Pro-only CVEs, when what set hosts apart was the inventory criticality.
+- Prompt: on an Ubuntu host with no pending security updates an empty CVE list is normal, and the ids of Pro-only CVEs are in each host's report (`cves_pro_only`). The model presented both as missing data.
+
+### Tests
+
+- 1 new test (260 in total) with a high-criticality host with nothing pending and 107 Pro-only CVEs.
+
 ## 1.3.1 (2026-11-26)
 
 ### Fixes

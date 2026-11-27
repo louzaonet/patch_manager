@@ -566,10 +566,15 @@ async def generate_briefing(state: AgentState) -> dict[str, Any]:
         "not rebooted yet). cvss is the NVD score; with "
         "score_source \"ubuntu\" the NVD had none and it is the lowest CVSS of the band for "
         "Canonical's priority. cves_pro_only are fixed only with Ubuntu Pro (not installable without "
-        "a subscription): report them apart, they do not raise the risk unless in kev_pro_only. "
+        "a subscription): report them apart, they do not raise the risk unless in kev_pro_only; "
+        "their ids are in each host's report file (cves_pro_only), not in this data, by design. "
         "security_updates_without_notice are pending security updates newer than Canonical's data or "
         "with no CVE (tzdata, -dev packages): not a data error. macOS and Windows reports carry no CVE "
-        "ids; for them an empty list is normal and NOT a data gap.)",
+        "ids; for them an empty list is normal and NOT a data gap. On an Ubuntu host with no pending "
+        "security updates an empty list is normal too.)",
+        "RISK SCORE: it comes from pending security updates, KEV, CVSS of pending CVEs, the inventory "
+        "criticality, the size of the update backlog and pending reboots. Factors ending in "
+        "\"(not scored)\" are context only: never say they drive a host's risk.",
     ]
     if any(h.unfixed_counts for h in hosts):
         worst = [h.hostname for h in hosts
