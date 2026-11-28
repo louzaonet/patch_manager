@@ -62,6 +62,7 @@ class HostInfo:
     # Next Ubuntu release do-release-upgrade offers ("26.04.1 LTS"), not scored
     release_upgrade_to: str = ""
     release_check_note: str = ""
+    security_check_note: str = ""      # the -security simulation failed: apt list pockets used
     reboot_required: bool = False
     last_patch_status: str = ""
     last_patch_at: str = ""

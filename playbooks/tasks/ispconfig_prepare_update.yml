@@ -5,9 +5,13 @@
 # it and removes the directory. Sets ispconfig_tmp. On failure the directory
 # is removed here and the error goes up.
 #
-# Integrity: TLS to ispconfig.org, plus ispconfig_sha256 when you give it
-# ({"3.3.3p2": "<sha256>"}); ispconfig_require_sha256: true refuses a
-# version without one.
+# Integrity: TLS to ispconfig.org, plus a sha256 per version. ISPConfig
+# publishes none, so the first download of each version pins its sha256 on
+# the controller (reports/ispconfig-sha256.json) and every later download of
+# that version, on any host, must match it (trust on first use; turn it off
+# with ispconfig_sha256_pin: false). A sum you give in ispconfig_sha256
+# ({"3.3.3p2": "<sha256>"}) wins over the pinned one;
+# ispconfig_require_sha256: true refuses a version that is in neither.
 #
 # The answers file is built on the host from the sample in the downloaded
 # tar.gz (files/ispconfig_autoupdate.py), with ispconfig_default_answers
@@ -23,14 +27,41 @@
         suffix: .ispconfig
       register: ispconfig_tmp
 
+    - name: Read the checksums pinned by earlier downloads
+      ansible.builtin.slurp:
+        src: "{{ ispconfig_pin_file }}"
+      register: ispconfig_pins_raw
+      failed_when: false
+      delegate_to: localhost
+      vars: &ispconfig_controller
+        ansible_become: false
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: ispconfig_sha256_pin | default(true) | bool
+
+    # A pin file that is not valid JSON stops the update (rescue below): it
+    # is the record the downloads are checked against.
+    - name: Pick the checksum this download must have
+      ansible.builtin.set_fact:
+        ispconfig_pins: "{{ pins }}"
+        ispconfig_expected_sha256: >-
+          {{ (ispconfig_sha256 | default({}))[ispconfig_target]
+             | default(pins[ispconfig_target] | default('')) | lower }}
+        ispconfig_sha256_source: >-
+          {{ 'ispconfig_sha256' if ispconfig_target in (ispconfig_sha256 | default({}))
+             else 'pinned' if ispconfig_target in pins else 'none' }}
+      vars:
+        pins: >-
+          {{ (ispconfig_pins_raw.content | b64decode | from_json)
+             if (ispconfig_pins_raw.content | default('')) else {} }}
+
     - name: Stop if a checksum is required and there is none for this version
       ansible.builtin.fail:
         msg: >-
-          ispconfig_require_sha256 is set and ispconfig_sha256 has no entry for {{ ispconfig_target }}.
-          Add its sha256 to ispconfig_sha256 after checking the file.
+          ispconfig_require_sha256 is set and there is no sha256 for {{ ispconfig_target }}
+          (neither in ispconfig_sha256 nor pinned). Add it to ispconfig_sha256 after checking the file.
       when:
         - ispconfig_require_sha256 | default(false) | bool
-        - ispconfig_target not in (ispconfig_sha256 | default({}))
+        - not ispconfig_expected_sha256
 
     - name: "Download ISPConfig {{ ispconfig_target }}"
       ansible.builtin.get_url:
@@ -40,11 +71,25 @@
         dest: "{{ ispconfig_tmp.path }}/ispconfig.tar.gz"
         mode: "0600"
         timeout: 120
-        # We found no checksums published by ISPConfig: this checks the
-        # values you put in ispconfig_sha256 (version -> sha256), if any.
-        checksum: >-
-          {{ ('sha256:' ~ ispconfig_sha256[ispconfig_target]) if ispconfig_target in (ispconfig_sha256 | default({}))
-             else omit }}
+        checksum: "{{ ('sha256:' ~ ispconfig_expected_sha256) if ispconfig_expected_sha256 else omit }}"
+
+    - name: Checksum of the download
+      ansible.builtin.stat:
+        path: "{{ ispconfig_tmp.path }}/ispconfig.tar.gz"
+        checksum_algorithm: sha256
+        get_checksum: true
+      register: ispconfig_download
+
+    - name: Pin the checksum of a version downloaded for the first time
+      ansible.builtin.copy:
+        content: "{{ ispconfig_pins | combine({ispconfig_target: ispconfig_download.stat.checksum}) | to_nice_json }}\n"
+        dest: "{{ ispconfig_pin_file }}"
+        mode: "{{ patch_report_file_mode | default('0640') }}"
+      delegate_to: localhost
+      vars: *ispconfig_controller
+      when:
+        - ispconfig_sha256_pin | default(true) | bool
+        - ispconfig_sha256_source == 'none'
 
     - name: Unpack it
       ansible.builtin.unarchive:

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.4.2 (2026-11-28)
+
+What was left from the 1.4.1 review, plus two things seen while deploying it: an OVAL step that took 10 minutes and answers about a host that said it was not in the inventory.
+
+### Security
+
+- Manifests: the `pattern` of `string` parameters is compiled with RE2 (`google-re2`, new dependency), which matches in linear time. The 1.4.1 check let through patterns that hang the service with fewer than 200 characters, such as `(a|aa)+`, `(a+){10}` or forty `a?` in a row. RE2 has no backreferences or lookarounds: a pattern that uses them is refused at load time. Without `google-re2` only simple patterns load, and the log says so (`re2_missing`).
+- ISPConfig: the first download of each version pins its sha256 in `reports/ispconfig-sha256.json`, and later ones, on any host, must match. If the file changes on ispconfig.org between two hosts or two runs, the second one stops. A sum in `ispconfig_sha256` wins over the pinned one, `ispconfig_require_sha256: true` also accepts the pinned one, and `ispconfig_sha256_pin: false` turns it off. The ISPConfig Update report has `sha256` and where the expected sum came from (`sha256_source`).
+- Plan approval: if the inventory can't be read at approval time, the plan is refused. In 1.4.1 there was nothing to compare with and the plan went through without a word.
+- Docker: reports are 0640 and their directories 2750, as in the native install. They belong to the group `PATCH_REPORT_GID` (10010), which patch-ai is given too; `volume-init` fixes the ones earlier versions left on every start.
+
+### Fixes
+
+- Check Updates (Ubuntu): if the `apt-get -s -t <release>-security dist-upgrade` simulation fails (broken dependencies, a mirror without the `-security` pocket), the check no longer fails. Security updates come from the pocket in `apt list`, as before 1.4.1, and the report says so in `security_check_error`, which reaches the analysis. Apply Patches still stops in that case.
+- Docker Update: a service new in the compose file (no image before the run) failed the task that records the result, and the project was reported FAILED after a good update.
+- OVAL: each request to Canonical has `patch_oval_timeout` seconds (30, was 120), DNS included, and all of them `patch_oval_budget` (180). Past that the cached copy is used and the report says so (`cve_data_warning`). On 27 November the four jammy and noble requests took about 60 s each and the whole step 10 minutes. Each host's report has how long each file took (`oval_request_seconds`).
+- Chat: a question about a given host carries its data from the last Check Updates (OS, updates, `release_upgrade_to`, pending reboot, report age). It used to get only counts and the hosts with pending updates, and of Backup, with none, the AI said it was not in the inventory.
+- Capabilities: the answer carries that host data too, and for the ones that change something it explains that a `null` report means it has not been run on that host yet. The AI no longer asks for confirmation in the answer: how to create the plan is shown below it.
+- Docker Update: new example manifest, `config/capabilities.d.example/docker_update.yml`, so the AI proposes the update as a plan with approval. Without it the AI only knew `docker_check` and answered "update joplin's docker" saying there was no playbook for that.
+- Intent without LLM: among several capabilities the longest keyword wins, so "actualizar docker" goes to `docker_update` and not to `docker_check` for containing "docker".
+- Intent without LLM: "no" before a noun is no longer taken as a negated verb. "no patches pending" fell back to `ask_question` instead of `check_updates`; the same with "no hay parches pendientes" or "sin parches pendientes".
+
+### Upgrading
+
+- `pip install --require-hashes -r requirements.lock` installs `google-re2` (wheels for aarch64 and x86_64, Python 3.10 to 3.14).
+- Docker: `docker compose up -d` runs `volume-init` again, which changes the group and modes of the reports.
+
 ## 1.4.1 (2026-11-27)
 
 Fixes from an external security and robustness review, plus a bug seen in the first real ISPConfig update.

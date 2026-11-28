@@ -30,7 +30,8 @@
 # A multiserver setup must update the master first: list it first, or run
 # with --limit. Optional vars: ispconfig_dir, ispconfig_version_url,
 # ispconfig_download_url ({version} is replaced), ispconfig_update_timeout
-# (1800 s), ispconfig_panel_port (8080), lxd_host / lxd_instance.
+# (1800 s), ispconfig_panel_port (8080), lxd_host / lxd_instance,
+# ispconfig_sha256, ispconfig_require_sha256, ispconfig_sha256_pin (true).
 # =============================================================================
 
 - name: "Update ISPConfig"
@@ -40,6 +41,9 @@
   serial: 1
   vars:
     ispconfig_force: false
+    # sha256 of each version, pinned on its first download (see the header of
+    # tasks/ispconfig_prepare_update.yml)
+    ispconfig_pin_file: "{{ patch_report_dir }}/ispconfig-sha256.json"
     # The answers of ispconfig_update.sh at its prompts. Change single keys with
     # ispconfig_update_answers in the inventory (merged over these).
     ispconfig_default_answers:
@@ -191,6 +195,11 @@
           restored: "{{ lxd_restored }}"
           restore_error: "{{ lxd_restore_error or None }}"
           output_tail: "{{ ispconfig_update_output or None }}"
+          # sha256 of the tar.gz and where the expected value came from:
+          # ispconfig_sha256, pinned (an earlier download) or none (first
+          # download of this version, pinned now)
+          sha256: "{{ ispconfig_download.stat.checksum | default(None) }}"
+          sha256_source: "{{ ispconfig_sha256_source | default(None) }}"
       when: patch_report_enabled | default(true) | bool
 
     - name: Fail the host if the update didn't go through

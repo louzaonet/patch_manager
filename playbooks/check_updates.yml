@@ -41,7 +41,10 @@
     # Which of them are security updates: an upgrade simulated with the
     # -security pocket preferred, as apply_patches.yml installs them. Taking
     # the pocket of the candidate in "apt list" missed a fix in -security when
-    # -updates had a newer version.
+    # -updates had a newer version. The simulation fails (rc 100) with broken
+    # dependencies or without the -security pocket in the sources (local
+    # mirror): then the pocket in "apt list" is used, as before 1.4.1, and the
+    # report says so (security_check_error). A check must not fail for that.
     - name: List the security updates (simulated, -security preferred)
       ansible.builtin.command:
         argv: [apt-get, -s, -o, Debug::NoLocking=1, -t, "{{ ansible_facts['distribution_release'] }}-security", dist-upgrade]
@@ -49,6 +52,7 @@
         LC_ALL: C
       register: apt_security_sim
       changed_when: false
+      failed_when: false
 
     # Installed packages, for "which version of X do we have?" in the AI
     # service. Only lines in state "ii" (installed) are kept.
@@ -112,6 +116,12 @@
           # e.g. "26.04.1 LTS"; null when none is offered. release_check_error
           # when it could not be checked (no do-release-upgrade, no network).
           release_upgrade_to: "{{ offered[0] if offered else None }}"
+          security_check_error: >-
+            {{ None if sim_ok
+               else ('apt-get simulation failed (rc ' ~ apt_security_sim.rc | default('?') ~ ': '
+                     ~ ((apt_security_sim.stderr | default('', true) | trim).splitlines() | last
+                        | default('no output'))[-160:]
+                     ~ '); security updates taken from the apt list pockets') }}
           release_check_error: >-
             {{ None if not (patch_release_check | default(true) | bool) or offered
                else 'could not reach the Ubuntu release list (changelogs.ubuntu.com)'
@@ -128,10 +138,13 @@
         # the list can't be downloaded: the text tells them apart.
         release_text: "{{ (release_check.stdout | default('')) ~ '\n' ~ (release_check.stderr | default('')) }}"
         offered: "{{ release_text | regex_findall(\"New release '([^']+)' available\") }}"
+        sim_ok: "{{ (apt_security_sim.rc | default(1)) == 0 }}"
         # "Inst pkg [installed] (new Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [amd64])"
         security: >-
           {{ apt_security_sim.stdout_lines | select('match', '^Inst \S+ \[')
-             | select('search', '\(\S+ [^)]*-security') | map('regex_replace', '^Inst ([^ :]+).*$', '\1') | unique | list }}
+             | select('search', '\(\S+ [^)]*-security') | map('regex_replace', '^Inst ([^ :]+).*$', '\1') | unique | list
+             if sim_ok else
+             upgradable | select('search', '^[^ ]+/[^ ]*-security') | map('regex_replace', '/.*$', '') | list }}
 
 # ─── Rocky Linux ────────────────────────────────────────────────────────────
 - name: "Check pending updates: Rocky Linux"
@@ -331,13 +344,17 @@
     # and never fails the play: problems end up as cve_error in the report.
     # --unfixed also reads the CVE OVAL (5-14 MB per release) for the CVEs
     # with no fix yet (patch_ubuntu_unfixed_cves: false to skip it).
+    # Each request has patch_oval_timeout seconds (30, DNS included) and all of
+    # them patch_oval_budget (180): past it the cached copies are used.
     - name: Find the CVEs fixed by pending Ubuntu updates (Canonical OVAL)
       ansible.builtin.command:
         argv: >-
           {{ [ansible_playbook_python, playbook_dir ~ '/files/ubuntu_oval_cves.py',
               '--cache-dir', patch_oval_cache_dir | default(patch_report_dir ~ '/oval-cache'),
               '--packages-dir', patch_report_dir ~ '/packages',
-              '--url-base', patch_oval_url_base | default('https://security-metadata.canonical.com/oval')]
+              '--url-base', patch_oval_url_base | default('https://security-metadata.canonical.com/oval'),
+              '--timeout', patch_oval_timeout | default(30) | string,
+              '--budget', patch_oval_budget | default(180) | string]
              + (['--unfixed'] if patch_ubuntu_unfixed_cves | default(true) | bool else []) }}
         stdin: "{{ oval_hosts | to_json }}"
       register: oval_run

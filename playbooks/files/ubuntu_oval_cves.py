@@ -25,6 +25,11 @@ changed upstream (If-Modified-Since), and compiled into a small JSON index that
 is reused until the next change. If the download fails, the cached copy is
 used and the result says how old it is. Nothing here makes the playbook fail:
 errors are reported per release and per host in the output.
+
+Each request runs in its own thread with a hard limit (--timeout), which also
+covers a stalled DNS lookup (the socket timeout does not), and all of them share
+a time budget (--budget): once it is spent, the remaining releases use their
+cached copy. Every release status says how long its request took.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ import pyexpat
 import re
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -545,10 +551,39 @@ def _atomic_write(path: Path, data: bytes) -> None:
         raise
 
 
+class _Stalled(Exception):
+    """The request did not finish within its time limit."""
+
+
+def _fetch(req: urllib.request.Request, limit: float) -> tuple[bytes, str | None]:
+    """(body, Last-Modified) of one GET, in a thread so that `limit` also bounds
+    the DNS lookup. Raises what urlopen raises, or _Stalled. An abandoned thread
+    is a daemon: it can't keep the script alive and its result is ignored."""
+    box: dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            with urllib.request.urlopen(req, timeout=limit) as resp:  # noqa: S310 (scheme checked in main)
+                box["body"] = resp.read(MAX_DOWNLOAD + 1)
+                box["modified"] = resp.headers.get("Last-Modified")
+        except BaseException as e:  # noqa: BLE001 (handed to the caller as is)
+            box["error"] = e
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(limit)
+    if t.is_alive():
+        raise _Stalled(f"no answer in {limit:.0f} s")
+    if "error" in box:
+        raise box["error"]
+    return box["body"], box["modified"]
+
+
 def load_release(codename: str, cache: Path, url_base: str, timeout: float,
-                 kind: str = "usn") -> tuple[dict | None, dict]:
+                 kind: str = "usn", deadline: float | None = None) -> tuple[dict | None, dict]:
     """(index or None, status) for one release and kind ("usn" or "cve");
-    downloads only when the file changed upstream."""
+    downloads only when the file changed upstream. `deadline` (time.monotonic())
+    is the end of the run's network budget: past it the cached copy is used."""
     status: dict[str, Any] = {"downloaded": False, "error": None}
     bz = cache / f"com.ubuntu.{codename}.{kind}.oval.xml.bz2"
     idx_path = cache / f"com.ubuntu.{codename}.{kind}.index.json"
@@ -556,10 +591,12 @@ def load_release(codename: str, cache: Path, url_base: str, timeout: float,
     req = urllib.request.Request(url, headers={"User-Agent": "patch-manager"})  # noqa: S310 (scheme checked in main)
     if bz.exists():
         req.add_header("If-Modified-Since", email.utils.formatdate(bz.stat().st_mtime, usegmt=True))
+    limit = timeout if deadline is None else min(timeout, deadline - time.monotonic())
+    started = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            body = resp.read(MAX_DOWNLOAD + 1)
-            modified = resp.headers.get("Last-Modified")
+        if limit < 1:
+            raise _Stalled("not checked: the network time budget of this run is spent")
+        body, modified = _fetch(req, limit)
         if len(body) > MAX_DOWNLOAD:
             raise OSError(f"{url} is larger than {MAX_DOWNLOAD // 2**20} MB")
         _atomic_write(bz, body)
@@ -575,8 +612,11 @@ def load_release(codename: str, cache: Path, url_base: str, timeout: float,
     except urllib.error.HTTPError as e:
         if e.code != 304:
             status["error"] = f"HTTP {e.code} for {url}"
+    except _Stalled as e:
+        status["error"] = f"download failed: {e}" if limit >= 1 else str(e)
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         status["error"] = f"download failed: {e}"
+    status["request_seconds"] = round(time.monotonic() - started, 2)
     if not bz.exists():
         return None, status
 
@@ -621,6 +661,11 @@ def _host_result(h: dict[str, Any], index: dict | None, cve_index: dict | None,
     sec = [str(p) for p in (h.get("security_packages") or [])][:500]
     result = evaluate(index, packages, h.get("kernel"), sec)
     result.update(cve_source="ubuntu-usn-oval", cve_data_at=index.get("timestamp"))
+    # How long the requests for this host's files took: when a run is slow,
+    # the report says which file it was.
+    result["oval_request_seconds"] = {
+        k: releases[k]["request_seconds"] for k in (codename, f"{codename}-cve")
+        if k in releases and "request_seconds" in releases[k]}
     if releases[codename].get("error"):
         # Evaluated with the cached copy: say why it was not refreshed.
         result["cve_data_warning"] = releases[codename]["error"][:300]
@@ -641,7 +686,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cache-dir", required=True, type=Path)
     ap.add_argument("--packages-dir", required=True, type=Path)
     ap.add_argument("--url-base", default=URL_BASE)
-    ap.add_argument("--timeout", type=float, default=120)
+    ap.add_argument("--timeout", type=float, default=30,
+                    help="seconds per request, DNS included (default 30)")
+    ap.add_argument("--budget", type=float, default=180,
+                    help="seconds for all the requests of the run; then the cache is used (default 180)")
     ap.add_argument("--unfixed", action="store_true",
                     help="also list package CVEs without a fix yet (CVE OVAL, 5-14 MB per release)")
     args = ap.parse_args(argv)
@@ -666,12 +714,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             out["errors"][str(h["host"])] = f"unknown Ubuntu codename {codename!r}"
 
+    deadline = time.monotonic() + args.budget
     for codename, group in sorted(by_release.items()):
-        index, out["releases"][codename] = load_release(codename, args.cache_dir, args.url_base, args.timeout)
+        index, out["releases"][codename] = load_release(
+            codename, args.cache_dir, args.url_base, args.timeout, deadline=deadline)
         cve_index = None
         if args.unfixed and index is not None:
             cve_index, out["releases"][f"{codename}-cve"] = load_release(
-                codename, args.cache_dir, args.url_base, args.timeout, kind="cve")
+                codename, args.cache_dir, args.url_base, args.timeout, kind="cve", deadline=deadline)
         for h in group:
             name = str(h["host"])
             result = _host_result(h, index, cve_index, out["releases"], codename, args)

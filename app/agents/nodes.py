@@ -443,12 +443,40 @@ def _host_summary(hosts: list[HostInfo]) -> list[dict[str, Any]]:
                 **({"unfixed_data": h.unfixed_note} if h.unfixed_note else {}),
                 **({"release_upgrade_to": h.release_upgrade_to} if h.release_upgrade_to else {}),
                 **({"release_check": h.release_check_note} if h.release_check_note else {}),
+                **({"security_check": h.security_check_note} if h.security_check_note else {}),
                 } if h.os_group == "ubuntu_servers" else {}),
             "reboot_pending": h.reboot_required,
             "report_age_h": h.report_age_hours,
             "factors": h.risk_factors[:4],
         }
         for h in hosts[:MAX_HOSTS_IN_PROMPT]
+    ]
+
+
+MAX_HOST_CARDS = 20
+
+
+def host_cards(hosts: list[HostInfo]) -> list[dict[str, Any]]:
+    """What the latest reports say about a few hosts, for answers that are not
+    a briefing (questions, capabilities). No risk score: it is only computed
+    for analyses. No IP addresses, as in _host_summary."""
+    return [
+        {
+            "host": h.hostname,
+            "group": h.os_group,
+            "report": "found" if h.report_found else "none (Check Updates has not reported this host)",
+            "os": h.os_name or None,
+            "updates": h.update_count,
+            "security_updates": h.security_count,
+            **({"release_upgrade_to": h.release_upgrade_to} if h.release_upgrade_to else {}),
+            **({"release_check": h.release_check_note} if h.release_check_note else {}),
+            **({"security_check": h.security_check_note} if h.security_check_note else {}),
+            "reboot_pending": h.reboot_required,
+            **({"last_patch": f"{h.last_patch_status} {h.last_patch_at}".strip()}
+               if h.last_patch_status else {}),
+            "report_age_h": h.report_age_hours,
+        }
+        for h in hosts[:MAX_HOST_CARDS]
     ]
 
 
@@ -665,13 +693,22 @@ with what needs attention. No filler, no generic advice."""
 async def handle_question(state: AgentState) -> dict[str, Any]:
     counts = {group: len(hosts) for group, hosts in state.inventory.items()}
     pending = {h.hostname: h.update_count for h in state.all_hosts if h.update_count}
+    # 1.4.1 only gave counts and the hosts with updates: asked about a host with
+    # none, the model said it was not in the inventory.
+    about = ""
+    if state.target_hosts:
+        cards = host_cards(sorted(hosts_in_scope(state), key=lambda h: h.hostname))
+        about = (f"\nHosts the question is about ({state.target_hosts}), from the latest Check Updates "
+                 f"reports: {json.dumps(cards, separators=(',', ':'))}\n" if cards else
+                 f"\nThe question names {state.target_hosts}, which matches no host of the inventory.\n")
     prompt = f"""You are the assistant of a patch management system built on Ansible and
 Semaphore UI. It manages Ubuntu, Rocky Linux, macOS and Windows 10/11 hosts.
 
 Inventory (hosts per group): {json.dumps(counts)}
 Groups: {", ".join(state.known_groups)}
 Hosts with pending updates (from the latest reports): {json.dumps(pending) if pending else "none or unknown"}
-
+(a host missing from that list has no pending updates or no report; it is still in the inventory)
+{about}
 Playbooks:
 - check_updates.yml: detect pending updates, write per-host reports (no changes)
 - apply_patches.yml: install updates, send report (from the dashboard: only after a plan is approved)

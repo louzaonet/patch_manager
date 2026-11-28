@@ -243,10 +243,15 @@ _KEYWORDS: list[tuple[str, str]] = [
 
 # "don't install, just tell me the risk" / "no actualices, solo dime el
 # riesgo": a negated action verb is not a request for that action.
+_ACTION_WORD = (r"(?:apply\w*|install\w*|upgrade\w*|deploy\w*|patch\w*|apl[ií]c\w*|inst[aá]l\w*|actualic\w*|"
+                r"actuali[zí]\w*|parch[eé]\w*|despl[eé]g\w*|despli[eé]g\w*)")
+# After "no" and "sin" a noun is not a verb: "no patches pending" (English
+# determiner), "no hay actualizaciones", "sin parches pendientes".
+_ACTION_NOUN = (r"(?:patch(?:es)?|upgrades?|installs?|installations?|deployments?|parches?|parcheos?|"
+                r"actualizaci\w*|instalaci\w*|despliegues?)\b")
 _NEGATED_ACTION = re.compile(
-    r"\b(?:no|don'?t|do not|never|nunca|sin)\s+(?:\w+\s+){0,2}?"
-    r"(?:apply\w*|install\w*|upgrade\w*|deploy\w*|patch\w*|apl[ií]c\w*|inst[aá]l\w*|actualic\w*|"
-    r"actuali[zí]\w*|parch[eé]\w*|despl[eé]g\w*|despli[eé]g\w*)"
+    rf"\b(?:don'?t|do not|never|nunca)\s+(?:\w+\s+){{0,2}}?{_ACTION_WORD}"
+    rf"|\b(?:no|sin)\s+(?:\w+\s+){{0,2}}?(?!{_ACTION_NOUN}){_ACTION_WORD}"
 )
 
 
@@ -262,12 +267,16 @@ _RUN_RE = re.compile(r"\b(run|launch|execute|start|trigger|now|lanza|lanzar|ejec
 
 
 def capability_from_text(low: str, capabilities: list[tuple[str, list[str]]]) -> str | None:
-    """Capability whose name or one of its keywords appears in the (lowercase) message."""
+    """Capability whose name or one of its keywords appears in the (lowercase)
+    message; the longest match wins, so "actualizar docker" (docker_update)
+    beats "docker" (docker_check) whatever the order of the manifests."""
+    best: tuple[int, str] | None = None
     for name, keywords in capabilities:
         for word in [name, name.replace("_", " "), *keywords]:
-            if re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", low):
-                return name
-    return None
+            longer = best is None or len(word) > best[0]
+            if longer and re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", low):
+                best = (len(word), name)
+    return best[1] if best else None
 
 
 def keyword_intent(

@@ -678,3 +678,39 @@ async def test_prompt_says_what_drives_the_risk(env, fake_llm):
     assert '"(not scored)" are context only' in prompt
     assert "no pending security updates an empty list is normal too" in prompt
     assert "ids are in each host's report file (cves_pro_only)" in prompt
+
+
+# ─── 1.4.2: time limits ──────────────────────────────────────────────────────
+
+def test_a_stalled_request_is_cut_and_the_cache_used(tmp_path, server, monkeypatch):
+    # The socket timeout does not cover the DNS lookup: the request runs in a
+    # thread with a hard limit. Here urlopen hangs, like a stalled resolver.
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    oval.load_release("resolute", cache, server.url, 5)
+    import threading as th
+
+    hang = th.Event()
+    monkeypatch.setattr(oval.urllib.request, "urlopen", lambda *a, **k: hang.wait(30))
+    t0 = oval.time.monotonic()
+    index, status = oval.load_release("resolute", cache, server.url, 1)
+    hang.set()
+    assert oval.time.monotonic() - t0 < 3
+    assert index is not None and "no answer in 1 s" in status["error"]
+    assert status["request_seconds"] >= 1
+
+
+def test_spent_budget_skips_the_request_and_says_so(tmp_path, server):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    oval.load_release("resolute", cache, server.url, 5)
+    index, status = oval.load_release("resolute", cache, server.url, 5,
+                                      deadline=oval.time.monotonic() - 1)
+    assert index is not None and server.requests == [200]
+    assert "budget" in status["error"] and status["request_seconds"] < 1
+
+
+def test_every_release_says_how_long_its_request_took(tmp_path, server, capsys):
+    out = _run(tmp_path, server.url, [{"host": "Nina", "codename": "resolute"}], capsys)
+    assert isinstance(out["releases"]["resolute"]["request_seconds"], float)
+    assert set(out["hosts"]["Nina"]["oval_request_seconds"]) == {"resolute"}

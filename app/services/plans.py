@@ -292,6 +292,12 @@ def _check_scope_unchanged(plan: PendingPlan) -> None:
         listed |= set(phase.get("hosts") or [])
     reader = InventoryReader()
     parsed = reader.parse()
+    if not parsed.hosts:
+        # Unreadable or empty inventory: nothing to compare with, and 1.4.1
+        # let the plan through without a word. Refused instead.
+        logger.warning("plan_scope_unchecked", plan_id=plan.id, limit=plan.limit)
+        raise ScopeChanged("the inventory can't be read right now, so the hosts of the plan can't be "
+                           "checked again; fix it and approve again")
     _, all_hosts, _ = reader.build(parsed)
     state = AgentState(all_hosts=all_hosts, target_hosts=plan.limit,
                        group_members={g: sorted(m) for g, m in parsed.groups.items()})

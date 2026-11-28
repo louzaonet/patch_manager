@@ -50,6 +50,10 @@ patch_report_file_mode: "{{ lookup('ansible.builtin.env', 'PATCH_REPORT_FILE_MOD
 # patch_ubuntu_cves: true
 # patch_oval_url_base: https://security-metadata.canonical.com/oval
 # patch_oval_cache_dir: "{{ patch_report_dir }}/oval-cache"
+# Seconds per request (DNS included) and for all the requests of a run; when
+# one is spent the cached copy is used and the report says so.
+# patch_oval_timeout: 30
+# patch_oval_budget: 180
 # Package CVEs with no fix yet (Canonical's CVE OVAL, 5-14 MB per release): listed
 # apart in the analysis, never in the risk score.
 # patch_ubuntu_unfixed_cves: true

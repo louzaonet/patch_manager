@@ -173,6 +173,8 @@ class ReportReader:
         host.kernel_not_covered = bool(report.get("kernel_checked")) and not report.get("kernel_covered")
         release = str(report.get("release_upgrade_to") or "")
         host.release_upgrade_to = release if _RELEASE_RE.match(release) else ""
+        if report.get("security_check_error"):
+            host.security_check_note = _label(report.get("security_check_error"), 240)
         if report.get("release_check_error"):
             error = _label(report.get("release_check_error"), 120)
             host.release_check_note = f"release check failed: {error}"

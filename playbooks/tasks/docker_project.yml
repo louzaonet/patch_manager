@@ -196,7 +196,10 @@
           status: "{{ 'PULLED' if docker_mode == 'pull' else 'OK' }}"
           updated_images: "{{ updated_images }}"
           # The image ids those references had before the pull, for the cleanup.
-          old_image_ids: "{{ updated_images | map('extract', before_ids) | reject('equalto', 'none') | list }}"
+          # A reference new in this run (a service added to the compose file)
+          # had none: extract on it failed the task and the project was
+          # reported FAILED after a good update.
+          old_image_ids: "{{ updated_images | select('in', before_ids) | map('extract', before_ids) | list }}"
           containers: "{{ states }}"
 
   rescue:

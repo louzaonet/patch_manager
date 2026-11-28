@@ -57,7 +57,11 @@ services:
     networks: [patch-net]
 
   # Named volumes are created root-owned; Semaphore runs as uid 1001 and has
-  # to write the per-host reports and its known_hosts file.
+  # to write the per-host reports and its known_hosts file. The reports get
+  # the group PATCH_REPORT_GID (10010), which patch-ai is given too: they are
+  # 0640 and their directories setgid 2750, as in the native install.
+  # Runs on every start, so it also fixes reports written by earlier
+  # versions (0755/0644).
   volume-init:
     image: alpine:3.22
     command:
@@ -65,8 +69,9 @@ services:
       - -c
       - >-
         mkdir -p /reports/hosts /reports/patch-runs &&
-        chown -R 1001:0 /reports /ssh &&
-        chmod -R g+rwX,o+rX /reports && chmod 700 /ssh
+        chown -R 1001:${PATCH_REPORT_GID:-10010} /reports && chown -R 1001:0 /ssh &&
+        find /reports -type d -exec chmod 2750 {} + &&
+        find /reports -type f -exec chmod 0640 {} + && chmod 700 /ssh
     volumes:
       - reports:/reports
       - semaphore_ssh:/ssh
@@ -93,10 +98,10 @@ services:
       # Variables passed through to Ansible tasks (used by inventory/group_vars/all.yml)
       SEMAPHORE_FORWARDED_ENV_VARS: '["EMAIL_ENABLED","SMTP_HOST","SMTP_PORT","SMTP_USER","SMTP_PASSWORD","SMTP_SECURE","PATCH_REPORT_DIR","PATCH_REPORT_DIR_MODE","PATCH_REPORT_FILE_MODE"]'
       PATCH_REPORT_DIR: /var/lib/patch-manager/reports
-      # patch-ai (uid 10001) shares no group with Semaphore here, so the
-      # reports stay world-readable inside the private volume.
-      PATCH_REPORT_DIR_MODE: "0755"
-      PATCH_REPORT_FILE_MODE: "0644"
+      # Same modes as the native install: patch-ai reads them through the
+      # group PATCH_REPORT_GID (see volume-init and group_add below).
+      PATCH_REPORT_DIR_MODE: "2750"
+      PATCH_REPORT_FILE_MODE: "0640"
     volumes:
       # Repository content Ansible needs, read-only (config/ secrets stay out).
       # In Semaphore: repository URL /opt/patch-manager, File inventory
@@ -137,6 +142,8 @@ services:
       # Capabilities (manifests the AI can use). Files and directory owned by
       # root and not writable by group/others, or they are rejected:
       # - ./capabilities.d:/etc/patch-manager/capabilities.d:ro
+    # Reads the reports through their group (0640 files, 2750 directories).
+    group_add: ["${PATCH_REPORT_GID:-10010}"]
     read_only: true
     tmpfs: ["/tmp"]
     security_opt: ["no-new-privileges:true"]

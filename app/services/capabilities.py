@@ -40,7 +40,20 @@ from typing import Any, Literal
 
 import structlog
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+try:  # google-re2: matching time is linear in the input, whatever the pattern
+    import re2 as _re2
+except ImportError:  # pragma: no cover (it is in requirements.txt and the lock)
+    _re2 = None
 
 from app.config import get_settings
 
@@ -64,11 +77,47 @@ MAX_STRING_PARAM = 200
 # whatever the playbook does with the value afterwards. Refused in every
 # string parameter, whatever its pattern allows.
 JINJA_MARKERS = ("{{", "{%", "{#")
-# A group with a quantifier inside, repeated without a bound: "(a+)+",
-# "(\\w*)*", "([a-z]+){2,}". Python's re backtracks exponentially on those, and
-# the match runs in the event loop. Bounded repeats ("(\\d+\\.){3}") are fine.
+# String parameter patterns are compiled with RE2 (google-re2), which matches
+# in linear time: no pattern can hang the event loop. RE2 has no
+# backreferences or lookarounds, so those patterns are refused at load time.
+# This cheap check runs first anyway: a group with a quantifier inside,
+# repeated without a bound ("(a+)+", "(\\w*)*", "([a-z]+){2,}") is a mistake
+# whatever the engine.
 _NESTED_QUANTIFIER = re.compile(r"\((?:[^()\\]|\\.)*(?:[+*]|\{\d*,\d*\})\)\s*(?:[+*]|\{\d+,\})")
+# Without RE2 (a platform with no wheel) Python's re backtracks, and the check
+# above is not enough: "(a|aa)+", "(a+){10}" and forty "a?" in a row also hang
+# it. Then only simple patterns load: no repeated group with a quantifier or
+# an alternation inside, and a handful of quantifiers in all.
+_REPEATED_COMPLEX_GROUP = re.compile(
+    r"\((?:[^()\\]|\\.)*(?:[+*?|]|\{\d*,?\d*\})(?:[^()\\]|\\.)*\)\s*(?:[+*?]|\{\d*,?\d*\})")
+_QUANTIFIER = re.compile(r"(?<!\\)(?:[+*?]|\{\d*,?\d*\})")
+_GROUP_PREFIX = re.compile(r"\(\?(?:[:=!]|<[=!]|P<\w+>)")
 MAX_PATTERN = 200
+MAX_QUANTIFIERS_WITHOUT_RE2 = 6
+
+
+def _compile_pattern(pattern: str) -> Any:
+    """The compiled pattern (RE2 when installed), or ValueError."""
+    if len(pattern) > MAX_PATTERN or _NESTED_QUANTIFIER.search(pattern):
+        raise ValueError("pattern too long, or with a repeated group that has its own quantifier "
+                         "(like (a+)+): that can hang the service; use a bounded repeat")
+    if _re2 is not None:
+        options = _re2.Options()
+        options.log_errors = False
+        try:
+            return _re2.compile(pattern, options)
+        except _re2.error as exc:
+            raise ValueError(f"invalid pattern for RE2 (no backreferences or lookarounds): {exc}") from exc
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"invalid pattern: {exc}") from exc
+    plain = _GROUP_PREFIX.sub("(", pattern)
+    if _REPEATED_COMPLEX_GROUP.search(plain) or len(_QUANTIFIER.findall(plain)) > MAX_QUANTIFIERS_WITHOUT_RE2:
+        raise ValueError("google-re2 is not installed: only simple patterns are accepted (no repeated "
+                         f"group with a quantifier or | inside, at most {MAX_QUANTIFIERS_WITHOUT_RE2} "
+                         "quantifiers); install google-re2 for the rest")
+    return compiled
 
 # Ansible variables that must never come from the AI as extra vars: they
 # control connection, privilege escalation, interpreters and the play itself.
@@ -99,6 +148,7 @@ class ParamSpec(BaseModel):
     max: int | None = None  # int
     default: bool | int | str | None = None  # sent when the AI gives no value
     required: bool = False  # no value and no default: refused before calling Semaphore
+    _matcher: Any = PrivateAttr(default=None)  # compiled pattern (string)
 
     @model_validator(mode="after")
     def _consistent(self) -> ParamSpec:
@@ -112,13 +162,7 @@ class ParamSpec(BaseModel):
         if self.type == "string":
             if not self.pattern:
                 raise ValueError("string needs a 'pattern' (free text is not accepted)")
-            try:
-                re.compile(self.pattern)
-            except re.error as exc:
-                raise ValueError(f"invalid pattern: {exc}") from exc
-            if len(self.pattern) > MAX_PATTERN or _NESTED_QUANTIFIER.search(self.pattern):
-                raise ValueError("pattern too long, or with a repeated group that has its own quantifier "
-                                 "(like (a+)+): that can hang the service; use a bounded repeat")
+            self._matcher = _compile_pattern(self.pattern)
         elif self.pattern is not None:
             raise ValueError("'pattern' is only for type string")
         if self.type != "int" and (self.min is not None or self.max is not None):
@@ -160,7 +204,8 @@ class ParamSpec(BaseModel):
         # string
         if any(m in text for m in JINJA_MARKERS):
             raise ValueError("can't contain {{, {% or {# (Ansible would run it as a template)")
-        if not text or len(text) > MAX_STRING_PARAM or not re.fullmatch(self.pattern or "", text):
+        matcher = self._matcher
+        if not text or len(text) > MAX_STRING_PARAM or matcher is None or not matcher.fullmatch(text):
             raise ValueError("does not match the allowed pattern")
         return text
 
@@ -383,6 +428,9 @@ class CapabilityRegistry:
         for err in errors:
             logger.warning("capability_rejected", **err)
         logger.info("capabilities_loaded", path=str(base), names=sorted(caps), rejected=len(errors))
+        if _re2 is None:
+            logger.warning("re2_missing", detail="google-re2 is not installed: string parameters only "
+                           "accept simple patterns (pip install google-re2)")
         return self
 
     @staticmethod

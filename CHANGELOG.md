@@ -1,5 +1,32 @@
 # Registro de cambios
 
+## 1.4.2 (2026-11-28)
+
+Lo que quedaba de la revisión de la 1.4.1, más dos cosas vistas al desplegarla: el paso OVAL que tardó 10 minutos y respuestas sobre un host que decían que no estaba en el inventario.
+
+### Seguridad
+
+- Manifiestos: los `pattern` de los parámetros `string` se compilan con RE2 (`google-re2`, nueva dependencia), que compara en tiempo lineal. La comprobación de la 1.4.1 dejaba pasar patrones que bloquean el servicio con menos de 200 caracteres, como `(a|aa)+`, `(a+){10}` o cuarenta `a?` seguidos. RE2 no tiene referencias atrás ni lookarounds: un patrón que los use se rechaza al cargar. Sin `google-re2` instalado solo se cargan patrones simples, y el log lo avisa (`re2_missing`).
+- ISPConfig: la primera descarga de cada versión fija su sha256 en `reports/ispconfig-sha256.json`, y las siguientes, en cualquier host, tienen que coincidir. Si el fichero cambia en ispconfig.org entre Bluma y Feliz, o entre dos ejecuciones, la segunda se para. Una suma en `ispconfig_sha256` manda sobre la fijada, `ispconfig_require_sha256: true` acepta también la fijada, y `ispconfig_sha256_pin: false` lo desactiva. El informe de ISPConfig Update lleva `sha256` y de dónde salió la suma esperada (`sha256_source`).
+- Aprobación de planes: si el inventario no se puede leer al aprobar, el plan se rechaza. En la 1.4.1 no había nada con qué comparar y el plan pasaba sin aviso.
+- Docker: los informes quedan en 0640 y sus directorios en 2750, como en la instalación nativa. Son del grupo `PATCH_REPORT_GID` (10010), que también tiene patch-ai; `volume-init` corrige al arrancar los que dejaron versiones anteriores.
+
+### Correcciones
+
+- Check Updates (Ubuntu): si la simulación `apt-get -s -t <versión>-security dist-upgrade` falla (dependencias rotas, un mirror sin el pocket `-security`), el check ya no falla. Las actualizaciones de seguridad salen del pocket de `apt list`, como antes de la 1.4.1, y el informe lo dice en `security_check_error`, que llega al análisis. Apply Patches sigue parándose en ese caso.
+- Docker Update: un servicio nuevo en el compose (sin imagen antes de la ejecución) hacía fallar la tarea que guarda el resultado, y el proyecto salía como FAILED aunque la actualización hubiera ido bien.
+- OVAL: cada petición a Canonical tiene un límite de `patch_oval_timeout` segundos (30, antes 120), DNS incluido, y todas juntas `patch_oval_budget` (180). Pasado el límite se usa la copia en caché y el informe lo dice (`cve_data_warning`). El 27 de noviembre las cuatro peticiones de jammy y noble tardaron unos 60 s cada una y el paso entero 10 minutos. Cada host lleva en su informe lo que tardó cada fichero (`oval_request_seconds`).
+- Chat: una pregunta sobre un host concreto lleva sus datos del último Check Updates (sistema, actualizaciones, `release_upgrade_to`, reinicio pendiente, antigüedad del informe). Antes solo iban los recuentos y los hosts con actualizaciones pendientes, y de Backup, sin ninguna, la IA decía que no estaba en el inventario.
+- Capacidades: la respuesta lleva también esos datos de cada host, y para las que cambian algo explica que un informe `null` quiere decir que todavía no se han ejecutado en ese host. La IA ya no pide confirmación en la respuesta: cómo crear el plan sale debajo.
+- Docker Update: nuevo manifiesto de ejemplo, `config/capabilities.d.example/docker_update.yml`, para que la IA proponga la actualización como plan con aprobación. Sin él solo conocía `docker_check` y a "actualiza el docker de joplin" contestaba que no había ningún playbook para eso.
+- Intención sin LLM: entre varias capacidades gana la palabra clave más larga, así que "actualizar docker" va a `docker_update` y no a `docker_check` por contener "docker".
+- Intención sin LLM: "no" delante de un sustantivo ya no se toma como negación de un verbo. "no patches pending" volvía a `ask_question` en vez de `check_updates`; lo mismo con "no hay parches pendientes" o "sin parches pendientes".
+
+### Al actualizar
+
+- `pip install --require-hashes -r requirements.lock` instala `google-re2` (hay wheels para aarch64 y x86_64, Python 3.10 a 3.14).
+- Docker: `docker compose up -d` vuelve a ejecutar `volume-init`, que cambia grupo y permisos de los informes.
+
 ## 1.4.1 (2026-11-27)
 
 Correcciones de una revisión externa de seguridad y robustez, más un fallo visto en la primera actualización real de ISPConfig.

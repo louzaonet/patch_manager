@@ -1,0 +1,41 @@
+# Capability manifest: lets the AI propose playbooks/docker_update.yml as a
+# plan. Nothing runs until a person approves it.
+# Field by field explanation: see docker_check.yml in this directory.
+#
+# Install:
+#   1. docker_check.yml (this directory) first: the AI proposes the update
+#      from its reports.
+#   2. Semaphore: template "Docker Update" for playbooks/docker_update.yml,
+#      with "allow overriding the limit". No schedule: it runs from approved plans.
+#   3. Each host in docker_hosts lists its projects in docker_compose_projects
+#      (see the header of playbooks/docker_update.yml).
+#   4. sudo install -o root -g patchai -m 0640 docker_update.yml /etc/patch-manager/capabilities.d/
+#      and reload.
+
+name: docker_update
+description: >-
+  Updates the Docker Compose projects of the docker hosts: docker compose pull
+  and up -d (only containers whose image changed are recreated), then checks
+  that every container is running and healthy and has not restarted. A project
+  that doesn't come back is reported FAILED and left as it is, with no rollback;
+  the previous image is kept on that host for a manual one. Use when
+  docker_check reports newer images.
+template: Docker Update
+risk: changes
+limit_group: docker_hosts
+params:
+  docker_pull_only:
+    type: bool
+    description: only download the new images, recreate nothing
+    default: false
+run:
+  wait: false
+  timeout: 300
+  on_request: false
+reports:
+  path: docker-runs/{host}.json
+  max_age_hours: 720
+  max_bytes: 65536
+include_in_analysis: false
+keywords: [actualizar docker, actualiza docker, docker update, update docker, actualizar contenedores,
+           actualizar imagenes, actualizar imágenes]

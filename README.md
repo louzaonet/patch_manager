@@ -42,6 +42,12 @@ Después configura Semaphore (repositorio `/opt/patch-manager`, inventario de ti
 | `https://<host>/` | Semaphore UI |
 | `https://<host>/ai/` | Panel de IA (HTTP Basic) |
 
+Ajustes que conviene revisar al instalar:
+
+- **Slack y Teams**: `SLACK_USER_IDS` y `TEAMS_USER_IDS` en `ai.env` limitan quién puede usar el bot (vacíos, cualquiera del canal).
+- **WinRM**: `setup_winrm.ps1 -DnsNames <nombres>` exporta el certificado del listener; cópialo a `inventory/winrm-ca/<host>.pem` y el inventario lo valida (`ansible_winrm_ca_trust_path`).
+- **ISPConfig**: la primera descarga de cada versión fija su sha256 en `reports/ispconfig-sha256.json` y las siguientes tienen que coincidir. Con `ispconfig_sha256` das tú la suma, y con `ispconfig_require_sha256: true` no se instala una versión sin suma conocida.
+
 ## Capacidades: playbooks propios para la IA (1.1.0)
 
 La IA puede usar playbooks nuevos sin tocar el código. Escribes el playbook, creas su plantilla en Semaphore y dejas un manifiesto YAML en `/etc/patch-manager/capabilities.d` que dice:
